@@ -296,12 +296,29 @@ class MarketConnector:
 
     # ==================== REST API Methods ====================
 
-    async def get_markets(self, active_only: bool = True) -> list[dict]:
+    async def get_markets(self, active_only: bool = True, limit: int = 100) -> list[dict]:
         """Get list of available markets."""
-        endpoint = "/markets"
+        endpoint = f"/markets?limit={limit}"
         if active_only:
-            endpoint += "?active=true"
-        return await self._request("GET", endpoint, authenticated=False)
+            endpoint += "&active=true"
+
+        response = await self._request("GET", endpoint, authenticated=False)
+
+        # Handle different response formats
+        if isinstance(response, list):
+            return response
+        elif isinstance(response, dict):
+            # Polymarket returns paginated response with 'data' or 'markets' key
+            if "data" in response:
+                return response["data"]
+            elif "markets" in response:
+                return response["markets"]
+            else:
+                # Return as single-item list if it looks like a market
+                logger.warning("Unexpected market response format", keys=list(response.keys()))
+                return [response] if "condition_id" in response else []
+
+        return []
 
     async def get_market(self, condition_id: str) -> dict:
         """Get market details by condition ID."""

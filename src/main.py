@@ -78,9 +78,35 @@ class SpikeBot:
             if not target_markets:
                 # If no specific markets configured, fetch active markets
                 structlog.get_logger().info("No target markets configured, fetching active markets...")
-                markets = await self.connector.get_markets(active_only=True)
-                # Take first 5 markets as example (in production, you'd filter more carefully)
-                target_markets = [m.get("condition_id", "") for m in markets[:5] if m.get("condition_id")]
+                try:
+                    markets = await self.connector.get_markets(active_only=True, limit=10)
+                    structlog.get_logger().debug("Fetched markets", count=len(markets))
+
+                    # Extract token IDs from markets (Polymarket uses tokens for trading)
+                    target_markets = []
+                    for market in markets[:5]:
+                        # Try different possible ID fields
+                        token_id = (
+                            market.get("condition_id") or
+                            market.get("token_id") or
+                            market.get("id") or
+                            ""
+                        )
+                        # Also check for tokens array in market
+                        if not token_id and "tokens" in market:
+                            tokens = market.get("tokens", [])
+                            if tokens and isinstance(tokens, list):
+                                token_id = tokens[0].get("token_id", "")
+
+                        if token_id:
+                            target_markets.append(token_id)
+                            structlog.get_logger().debug(
+                                "Found market",
+                                token_id=token_id,
+                                question=market.get("question", "")[:50],
+                            )
+                except Exception as e:
+                    structlog.get_logger().error("Failed to fetch markets", error=str(e))
 
             if not target_markets:
                 structlog.get_logger().error("No markets available to monitor")
