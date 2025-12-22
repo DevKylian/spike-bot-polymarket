@@ -558,11 +558,17 @@ class MarketConnector:
     async def _process_ws_message(self, msg: aiohttp.WSMessage) -> None:
         """Process incoming WebSocket message."""
         if msg.type == aiohttp.WSMsgType.TEXT:
+            # Ignore empty messages (pings/keepalives)
+            if not msg.data or not msg.data.strip():
+                return
+
             try:
                 data = json.loads(msg.data)
                 await self._handle_ws_data(data)
             except json.JSONDecodeError as e:
-                logger.error("Failed to parse WS message", error=str(e))
+                # Only log if it's not an empty/whitespace message
+                if msg.data.strip():
+                    logger.warning("Failed to parse WS message", error=str(e), data=msg.data[:100])
 
         elif msg.type == aiohttp.WSMsgType.ERROR:
             logger.error("WebSocket error", error=str(self._ws.exception()))
