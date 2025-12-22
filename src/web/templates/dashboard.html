@@ -1,0 +1,859 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Polymarket Spike Bot - Dashboard</title>
+    <style>
+        :root {
+            --bg-primary: #0d1117;
+            --bg-secondary: #161b22;
+            --bg-tertiary: #21262d;
+            --border-color: #30363d;
+            --text-primary: #c9d1d9;
+            --text-secondary: #8b949e;
+            --accent-green: #3fb950;
+            --accent-red: #f85149;
+            --accent-blue: #58a6ff;
+            --accent-yellow: #d29922;
+            --accent-purple: #a371f7;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+            background-color: var(--bg-primary);
+            color: var(--text-primary);
+            line-height: 1.6;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        /* Header */
+        header {
+            background: var(--bg-secondary);
+            border-bottom: 1px solid var(--border-color);
+            padding: 15px 0;
+            margin-bottom: 20px;
+        }
+
+        .header-content {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 0 20px;
+        }
+
+        .logo {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .logo h1 {
+            font-size: 1.5rem;
+            font-weight: 600;
+        }
+
+        .status-badge {
+            padding: 6px 12px;
+            border-radius: 20px;
+            font-size: 0.85rem;
+            font-weight: 500;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .status-badge.running {
+            background: rgba(63, 185, 80, 0.15);
+            color: var(--accent-green);
+            border: 1px solid var(--accent-green);
+        }
+
+        .status-badge.paused {
+            background: rgba(210, 153, 34, 0.15);
+            color: var(--accent-yellow);
+            border: 1px solid var(--accent-yellow);
+        }
+
+        .status-badge.stopped {
+            background: rgba(248, 81, 73, 0.15);
+            color: var(--accent-red);
+            border: 1px solid var(--accent-red);
+        }
+
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            animation: pulse 2s infinite;
+        }
+
+        .running .status-dot { background: var(--accent-green); }
+        .paused .status-dot { background: var(--accent-yellow); }
+        .stopped .status-dot { background: var(--accent-red); }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+
+        .paper-badge {
+            background: var(--accent-purple);
+            color: white;
+            padding: 4px 10px;
+            border-radius: 4px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            margin-left: 10px;
+        }
+
+        /* Grid Layout */
+        .dashboard-grid {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 20px;
+            margin-bottom: 20px;
+        }
+
+        /* Cards */
+        .card {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 20px;
+        }
+
+        .card-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 15px;
+        }
+
+        .card-title {
+            font-size: 0.9rem;
+            color: var(--text-secondary);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .card-value {
+            font-size: 2rem;
+            font-weight: 600;
+        }
+
+        .card-value.positive { color: var(--accent-green); }
+        .card-value.negative { color: var(--accent-red); }
+
+        .card-subtitle {
+            font-size: 0.85rem;
+            color: var(--text-secondary);
+            margin-top: 5px;
+        }
+
+        /* Stats Cards */
+        .stat-card {
+            text-align: center;
+        }
+
+        .stat-icon {
+            font-size: 1.5rem;
+            margin-bottom: 10px;
+        }
+
+        /* Main Content Grid */
+        .main-grid {
+            display: grid;
+            grid-template-columns: 2fr 1fr;
+            gap: 20px;
+        }
+
+        /* Markets Table */
+        .markets-card {
+            grid-column: span 2;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        th, td {
+            padding: 12px;
+            text-align: left;
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        th {
+            color: var(--text-secondary);
+            font-weight: 500;
+            font-size: 0.85rem;
+            text-transform: uppercase;
+        }
+
+        td {
+            font-family: 'SF Mono', Monaco, monospace;
+            font-size: 0.9rem;
+        }
+
+        .price-up { color: var(--accent-green); }
+        .price-down { color: var(--accent-red); }
+
+        /* Trades List */
+        .trade-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 12px;
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        .trade-item:last-child {
+            border-bottom: none;
+        }
+
+        .trade-side {
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 0.75rem;
+            font-weight: 600;
+        }
+
+        .trade-side.buy {
+            background: rgba(63, 185, 80, 0.15);
+            color: var(--accent-green);
+        }
+
+        .trade-side.sell {
+            background: rgba(248, 81, 73, 0.15);
+            color: var(--accent-red);
+        }
+
+        /* Signals */
+        .signal-item {
+            padding: 12px;
+            border-left: 3px solid var(--accent-blue);
+            background: rgba(88, 166, 255, 0.05);
+            margin-bottom: 10px;
+            border-radius: 0 6px 6px 0;
+        }
+
+        .signal-item.spike_up {
+            border-left-color: var(--accent-red);
+            background: rgba(248, 81, 73, 0.05);
+        }
+
+        .signal-item.spike_down {
+            border-left-color: var(--accent-green);
+            background: rgba(63, 185, 80, 0.05);
+        }
+
+        /* Controls */
+        .controls {
+            display: flex;
+            gap: 10px;
+        }
+
+        .btn {
+            padding: 8px 16px;
+            border: none;
+            border-radius: 6px;
+            font-size: 0.9rem;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .btn-primary {
+            background: var(--accent-blue);
+            color: white;
+        }
+
+        .btn-danger {
+            background: var(--accent-red);
+            color: white;
+        }
+
+        .btn-warning {
+            background: var(--accent-yellow);
+            color: black;
+        }
+
+        .btn:hover {
+            opacity: 0.9;
+            transform: translateY(-1px);
+        }
+
+        /* Config Panel */
+        .config-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 15px;
+        }
+
+        .config-item {
+            background: var(--bg-tertiary);
+            padding: 12px;
+            border-radius: 6px;
+        }
+
+        .config-label {
+            font-size: 0.8rem;
+            color: var(--text-secondary);
+            margin-bottom: 4px;
+        }
+
+        .config-value {
+            font-size: 1.1rem;
+            font-weight: 500;
+        }
+
+        /* Connection Status */
+        .connection-status {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 0.85rem;
+            color: var(--text-secondary);
+        }
+
+        .connection-status.connected {
+            color: var(--accent-green);
+        }
+
+        .connection-status.disconnected {
+            color: var(--accent-red);
+        }
+
+        /* Scrollable areas */
+        .scrollable {
+            max-height: 400px;
+            overflow-y: auto;
+        }
+
+        .scrollable::-webkit-scrollbar {
+            width: 6px;
+        }
+
+        .scrollable::-webkit-scrollbar-track {
+            background: var(--bg-tertiary);
+        }
+
+        .scrollable::-webkit-scrollbar-thumb {
+            background: var(--border-color);
+            border-radius: 3px;
+        }
+
+        /* Empty State */
+        .empty-state {
+            text-align: center;
+            padding: 40px;
+            color: var(--text-secondary);
+        }
+
+        /* Responsive */
+        @media (max-width: 1200px) {
+            .dashboard-grid {
+                grid-template-columns: repeat(2, 1fr);
+            }
+            .main-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        @media (max-width: 768px) {
+            .dashboard-grid {
+                grid-template-columns: 1fr;
+            }
+            .header-content {
+                flex-direction: column;
+                gap: 15px;
+            }
+        }
+
+        /* Animations */
+        .fade-in {
+            animation: fadeIn 0.3s ease-in;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(-10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .flash {
+            animation: flash 0.5s;
+        }
+
+        @keyframes flash {
+            0%, 100% { background-color: transparent; }
+            50% { background-color: rgba(88, 166, 255, 0.2); }
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <div class="header-content">
+            <div class="logo">
+                <h1>Polymarket Spike Bot</h1>
+                <span id="paperBadge" class="paper-badge" style="display: none;">PAPER TRADING</span>
+            </div>
+            <div style="display: flex; align-items: center; gap: 20px;">
+                <div class="connection-status" id="connectionStatus">
+                    <span class="status-dot"></span>
+                    <span>Connecting...</span>
+                </div>
+                <div class="status-badge stopped" id="botStatus">
+                    <span class="status-dot"></span>
+                    <span id="statusText">Stopped</span>
+                </div>
+                <div class="controls">
+                    <button class="btn btn-warning" id="pauseBtn" onclick="pauseBot()">Pause</button>
+                    <button class="btn btn-primary" id="resumeBtn" onclick="resumeBot()">Resume</button>
+                </div>
+            </div>
+        </div>
+    </header>
+
+    <div class="container">
+        <!-- Stats Cards -->
+        <div class="dashboard-grid">
+            <div class="card stat-card">
+                <div class="stat-icon">$</div>
+                <div class="card-value" id="dailyPnl">$0.00</div>
+                <div class="card-title">Daily P&L</div>
+            </div>
+            <div class="card stat-card">
+                <div class="stat-icon">#</div>
+                <div class="card-value" id="totalTrades">0</div>
+                <div class="card-title">Total Trades</div>
+            </div>
+            <div class="card stat-card">
+                <div class="stat-icon">%</div>
+                <div class="card-value" id="winRate">0%</div>
+                <div class="card-title">Win Rate</div>
+            </div>
+            <div class="card stat-card">
+                <div class="stat-icon">!</div>
+                <div class="card-value" id="signalsDetected">0</div>
+                <div class="card-title">Signals Detected</div>
+            </div>
+        </div>
+
+        <!-- Main Content -->
+        <div class="main-grid">
+            <!-- Markets -->
+            <div class="card">
+                <div class="card-header">
+                    <h2 class="card-title">Live Markets</h2>
+                    <span id="marketCount">0 markets</span>
+                </div>
+                <div class="scrollable">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Token ID</th>
+                                <th>Bid</th>
+                                <th>Ask</th>
+                                <th>Mid</th>
+                                <th>Spread</th>
+                            </tr>
+                        </thead>
+                        <tbody id="marketsTable">
+                            <tr>
+                                <td colspan="5" class="empty-state">Waiting for market data...</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- Configuration -->
+            <div class="card">
+                <div class="card-header">
+                    <h2 class="card-title">Configuration</h2>
+                </div>
+                <div class="config-grid">
+                    <div class="config-item">
+                        <div class="config-label">Spike Threshold</div>
+                        <div class="config-value" id="configSpike">3.0%</div>
+                    </div>
+                    <div class="config-item">
+                        <div class="config-label">Spike Window</div>
+                        <div class="config-value" id="configWindow">2.0s</div>
+                    </div>
+                    <div class="config-item">
+                        <div class="config-label">Order Amount</div>
+                        <div class="config-value" id="configAmount">$10.00</div>
+                    </div>
+                    <div class="config-item">
+                        <div class="config-label">Stop Loss</div>
+                        <div class="config-value" id="configStopLoss">5.0%</div>
+                    </div>
+                    <div class="config-item">
+                        <div class="config-label">Take Profit</div>
+                        <div class="config-value" id="configTakeProfit">2.0%</div>
+                    </div>
+                    <div class="config-item">
+                        <div class="config-label">Active Orders</div>
+                        <div class="config-value" id="configActiveOrders">0</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Positions -->
+            <div class="card">
+                <div class="card-header">
+                    <h2 class="card-title">Open Positions</h2>
+                </div>
+                <div class="scrollable" id="positionsList">
+                    <div class="empty-state">No open positions</div>
+                </div>
+            </div>
+
+            <!-- Recent Signals -->
+            <div class="card">
+                <div class="card-header">
+                    <h2 class="card-title">Recent Signals</h2>
+                </div>
+                <div class="scrollable" id="signalsList">
+                    <div class="empty-state">No signals yet</div>
+                </div>
+            </div>
+
+            <!-- Trade History -->
+            <div class="card markets-card">
+                <div class="card-header">
+                    <h2 class="card-title">Trade History</h2>
+                </div>
+                <div class="scrollable">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Time</th>
+                                <th>Side</th>
+                                <th>Token</th>
+                                <th>Price</th>
+                                <th>Size</th>
+                                <th>P&L</th>
+                            </tr>
+                        </thead>
+                        <tbody id="tradesTable">
+                            <tr>
+                                <td colspan="6" class="empty-state">No trades yet</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // WebSocket connection
+        let ws = null;
+        let reconnectAttempts = 0;
+        const maxReconnectAttempts = 10;
+
+        // State
+        let markets = {};
+        let signals = [];
+
+        function connect() {
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const wsUrl = `${protocol}//${window.location.host}/ws`;
+
+            ws = new WebSocket(wsUrl);
+
+            ws.onopen = () => {
+                console.log('WebSocket connected');
+                reconnectAttempts = 0;
+                updateConnectionStatus(true);
+            };
+
+            ws.onclose = () => {
+                console.log('WebSocket disconnected');
+                updateConnectionStatus(false);
+                scheduleReconnect();
+            };
+
+            ws.onerror = (error) => {
+                console.error('WebSocket error:', error);
+            };
+
+            ws.onmessage = (event) => {
+                const message = JSON.parse(event.data);
+                handleMessage(message);
+            };
+        }
+
+        function scheduleReconnect() {
+            if (reconnectAttempts < maxReconnectAttempts) {
+                reconnectAttempts++;
+                const delay = Math.min(1000 * Math.pow(2, reconnectAttempts), 30000);
+                console.log(`Reconnecting in ${delay}ms (attempt ${reconnectAttempts})`);
+                setTimeout(connect, delay);
+            }
+        }
+
+        function updateConnectionStatus(connected) {
+            const el = document.getElementById('connectionStatus');
+            if (connected) {
+                el.className = 'connection-status connected';
+                el.innerHTML = '<span class="status-dot" style="background: var(--accent-green);"></span><span>Connected</span>';
+            } else {
+                el.className = 'connection-status disconnected';
+                el.innerHTML = '<span class="status-dot" style="background: var(--accent-red);"></span><span>Disconnected</span>';
+            }
+        }
+
+        function handleMessage(message) {
+            switch (message.type) {
+                case 'init':
+                    initializeState(message.data);
+                    break;
+                case 'market':
+                    updateMarket(message.data);
+                    break;
+                case 'position':
+                    updatePosition(message.data);
+                    break;
+                case 'trade':
+                    addTrade(message.data);
+                    break;
+                case 'signal':
+                    addSignal(message.data);
+                    break;
+                case 'stats':
+                    updateStats(message.data);
+                    break;
+                case 'heartbeat':
+                    // Keep-alive
+                    break;
+            }
+        }
+
+        function initializeState(state) {
+            // Update status
+            updateBotStatus(state.status);
+
+            // Paper trading badge
+            if (state.is_paper_trading) {
+                document.getElementById('paperBadge').style.display = 'inline-block';
+            }
+
+            // Config
+            if (state.config) {
+                document.getElementById('configSpike').textContent = state.config.spike_threshold + '%';
+                document.getElementById('configWindow').textContent = state.config.spike_window + 's';
+                document.getElementById('configAmount').textContent = '$' + state.config.order_amount.toFixed(2);
+                document.getElementById('configStopLoss').textContent = state.config.stop_loss + '%';
+                document.getElementById('configTakeProfit').textContent = state.config.take_profit + '%';
+            }
+
+            // Stats
+            if (state.stats) {
+                updateStats(state.stats);
+            }
+
+            // Markets
+            if (state.markets) {
+                Object.values(state.markets).forEach(m => updateMarket(m));
+            }
+
+            // Trades
+            if (state.trade_history) {
+                state.trade_history.forEach(t => addTrade(t, false));
+            }
+        }
+
+        function updateBotStatus(status) {
+            const badge = document.getElementById('botStatus');
+            const text = document.getElementById('statusText');
+
+            badge.className = 'status-badge ' + status;
+            text.textContent = status.charAt(0).toUpperCase() + status.slice(1);
+        }
+
+        function updateStats(stats) {
+            const pnl = stats.daily_pnl || 0;
+            const pnlEl = document.getElementById('dailyPnl');
+            pnlEl.textContent = (pnl >= 0 ? '+' : '') + '$' + pnl.toFixed(2);
+            pnlEl.className = 'card-value ' + (pnl >= 0 ? 'positive' : 'negative');
+
+            document.getElementById('totalTrades').textContent = stats.total_trades || 0;
+            document.getElementById('signalsDetected').textContent = stats.signals_detected || 0;
+            document.getElementById('configActiveOrders').textContent = stats.active_orders || 0;
+
+            const winRate = stats.total_trades > 0
+                ? ((stats.winning_trades / stats.total_trades) * 100).toFixed(1)
+                : 0;
+            document.getElementById('winRate').textContent = winRate + '%';
+        }
+
+        function updateMarket(market) {
+            markets[market.token_id] = market;
+            renderMarkets();
+        }
+
+        function renderMarkets() {
+            const tbody = document.getElementById('marketsTable');
+            const marketList = Object.values(markets);
+
+            if (marketList.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="5" class="empty-state">Waiting for market data...</td></tr>';
+                return;
+            }
+
+            document.getElementById('marketCount').textContent = marketList.length + ' markets';
+
+            tbody.innerHTML = marketList.map(m => {
+                const shortId = m.token_id.substring(0, 10) + '...';
+                const bid = m.best_bid ? m.best_bid.toFixed(4) : '-';
+                const ask = m.best_ask ? m.best_ask.toFixed(4) : '-';
+                const mid = m.mid_price ? m.mid_price.toFixed(4) : '-';
+                const spread = m.spread ? (m.spread * 100).toFixed(2) + '%' : '-';
+
+                return `
+                    <tr id="market-${m.token_id}">
+                        <td title="${m.token_id}">${shortId}</td>
+                        <td class="price-up">${bid}</td>
+                        <td class="price-down">${ask}</td>
+                        <td>${mid}</td>
+                        <td>${spread}</td>
+                    </tr>
+                `;
+            }).join('');
+        }
+
+        function updatePosition(position) {
+            const list = document.getElementById('positionsList');
+            // Update or add position
+            // For now just show the data
+            if (Object.keys(position).length === 0) {
+                list.innerHTML = '<div class="empty-state">No open positions</div>';
+                return;
+            }
+
+            const pnl = position.unrealized_pnl || 0;
+            const pnlClass = pnl >= 0 ? 'positive' : 'negative';
+
+            list.innerHTML = `
+                <div class="trade-item">
+                    <div>
+                        <span class="trade-side ${position.side?.toLowerCase()}">${position.side}</span>
+                        <span style="margin-left: 10px;">${position.token_id?.substring(0, 10)}...</span>
+                    </div>
+                    <div>
+                        <span>Entry: $${position.entry_price?.toFixed(4) || 0}</span>
+                        <span class="${pnlClass}" style="margin-left: 15px;">${pnl >= 0 ? '+' : ''}${pnl.toFixed(2)}%</span>
+                    </div>
+                </div>
+            `;
+        }
+
+        function addTrade(trade, animate = true) {
+            const tbody = document.getElementById('tradesTable');
+
+            // Remove empty state if present
+            if (tbody.querySelector('.empty-state')) {
+                tbody.innerHTML = '';
+            }
+
+            const time = trade.timestamp ? new Date(trade.timestamp).toLocaleTimeString() : '-';
+            const shortId = trade.token_id ? trade.token_id.substring(0, 8) + '...' : '-';
+            const pnl = trade.pnl || 0;
+            const pnlClass = pnl >= 0 ? 'positive' : 'negative';
+
+            const row = document.createElement('tr');
+            if (animate) row.className = 'fade-in';
+
+            row.innerHTML = `
+                <td>${time}</td>
+                <td><span class="trade-side ${trade.side?.toLowerCase()}">${trade.side || '-'}</span></td>
+                <td title="${trade.token_id}">${shortId}</td>
+                <td>$${trade.price?.toFixed(4) || 0}</td>
+                <td>${trade.size?.toFixed(2) || 0}</td>
+                <td class="${pnlClass}">${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)}</td>
+            `;
+
+            tbody.insertBefore(row, tbody.firstChild);
+
+            // Keep only 20 rows
+            while (tbody.children.length > 20) {
+                tbody.removeChild(tbody.lastChild);
+            }
+        }
+
+        function addSignal(signal) {
+            signals.unshift(signal);
+            if (signals.length > 10) signals.pop();
+
+            const list = document.getElementById('signalsList');
+
+            list.innerHTML = signals.map(s => {
+                const time = new Date(s.timestamp || Date.now()).toLocaleTimeString();
+                const type = s.type || 'unknown';
+                const change = s.change_percent ? s.change_percent.toFixed(2) : 0;
+
+                return `
+                    <div class="signal-item ${type} fade-in">
+                        <div style="display: flex; justify-content: space-between;">
+                            <strong>${type.replace('_', ' ').toUpperCase()}</strong>
+                            <span>${time}</span>
+                        </div>
+                        <div style="color: var(--text-secondary); margin-top: 5px;">
+                            Change: ${change >= 0 ? '+' : ''}${change}% | Price: $${s.current_price?.toFixed(4) || 0}
+                        </div>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        async function pauseBot() {
+            try {
+                const response = await fetch('/api/bot/pause', { method: 'POST' });
+                const data = await response.json();
+                updateBotStatus(data.status);
+            } catch (e) {
+                console.error('Failed to pause:', e);
+            }
+        }
+
+        async function resumeBot() {
+            try {
+                const response = await fetch('/api/bot/resume', { method: 'POST' });
+                const data = await response.json();
+                updateBotStatus(data.status);
+            } catch (e) {
+                console.error('Failed to resume:', e);
+            }
+        }
+
+        // Initialize
+        document.addEventListener('DOMContentLoaded', () => {
+            connect();
+
+            // Keep WebSocket alive with pings
+            setInterval(() => {
+                if (ws && ws.readyState === WebSocket.OPEN) {
+                    ws.send(JSON.stringify({ type: 'ping' }));
+                }
+            }, 25000);
+        });
+    </script>
+</body>
+</html>

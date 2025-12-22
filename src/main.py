@@ -5,6 +5,7 @@ Entry point that orchestrates all components:
 - Configuration loading
 - WebSocket connection and reconnection
 - Strategy execution
+- Web dashboard for monitoring
 - Graceful shutdown handling
 """
 
@@ -15,12 +16,14 @@ from datetime import datetime, timezone
 from typing import NoReturn
 
 import structlog
+import uvicorn
 
 from .config import get_config, BotConfig
 from .logger import setup_logging, TradingLogger
-from .market_connector import MarketConnector
+from .market_connector import MarketConnector, OrderBook
 from .risk_manager import RiskManager
-from .strategy_engine import MultiMarketStrategy
+from .strategy_engine import MultiMarketStrategy, Signal
+from .web import WebDashboard
 
 
 # Global state for signal handling
@@ -36,14 +39,21 @@ class SpikeBot:
     the overall trading operation.
     """
 
-    def __init__(self, config: BotConfig):
+    def __init__(self, config: BotConfig, enable_web: bool = True, web_port: int = 8080):
         self.config = config
         self.logger = TradingLogger(config)
+        self.enable_web = enable_web
+        self.web_port = web_port
 
         # Components (initialized in start())
         self.connector: MarketConnector | None = None
         self.risk_manager: RiskManager | None = None
         self.strategy: MultiMarketStrategy | None = None
+
+        # Web dashboard
+        self.dashboard: WebDashboard | None = None
+        if enable_web:
+            self.dashboard = WebDashboard(config)
 
         # State
         self._running = False
@@ -124,6 +134,12 @@ class SpikeBot:
             # Start monitoring markets
             await self.strategy.start(target_markets)
 
+            # Setup dashboard callbacks
+            if self.dashboard:
+                self.connector.on_orderbook_update(self._on_orderbook_for_dashboard)
+                self.strategy.engine.on_signal(self._on_signal_for_dashboard)
+                self.dashboard.start()
+
             # Start background tasks
             self._running = True
             self._tasks = [
@@ -132,10 +148,15 @@ class SpikeBot:
                 asyncio.create_task(self._run_health_check()),
             ]
 
+            # Start web server if enabled
+            if self.enable_web and self.dashboard:
+                self._tasks.append(asyncio.create_task(self._run_web_server()))
+
             structlog.get_logger().info(
                 "Bot started successfully",
                 paper_trading=self.config.is_paper_trading,
                 markets_monitored=len(target_markets),
+                web_dashboard=f"http://localhost:{self.web_port}" if self.enable_web else "disabled",
             )
 
             # Wait for shutdown
@@ -227,10 +248,65 @@ class SpikeBot:
                         trading_enabled=risk_status["trading_enabled"],
                     )
 
+                    # Update dashboard stats
+                    if self.dashboard:
+                        await self.dashboard.update_stats({
+                            "daily_pnl": risk_status["daily_pnl"],
+                            "total_trades": strategy_stats["orders_placed"],
+                            "signals_detected": strategy_stats["signals_generated"],
+                            "active_orders": strategy_stats["active_orders"],
+                        })
+
             except asyncio.CancelledError:
                 break
             except Exception as e:
                 structlog.get_logger().error("Health check error", error=str(e))
+
+    async def _on_orderbook_for_dashboard(self, orderbook: OrderBook) -> None:
+        """Forward orderbook updates to dashboard."""
+        if self.dashboard and orderbook.mid_price:
+            await self.dashboard.update_market(orderbook.token_id, {
+                "best_bid": orderbook.best_bid,
+                "best_ask": orderbook.best_ask,
+                "mid_price": orderbook.mid_price,
+                "spread": orderbook.spread_percent,
+            })
+
+    async def _on_signal_for_dashboard(self, signal: Signal) -> None:
+        """Forward signals to dashboard."""
+        if self.dashboard:
+            await self.dashboard.add_signal({
+                "type": signal.type.value,
+                "token_id": signal.token_id,
+                "current_price": signal.current_price,
+                "change_percent": signal.change_percent,
+                "suggested_side": signal.suggested_side.value,
+                "confidence": signal.confidence,
+            })
+
+    async def _run_web_server(self) -> None:
+        """Run the web dashboard server."""
+        if not self.dashboard:
+            return
+
+        config = uvicorn.Config(
+            self.dashboard.app,
+            host="0.0.0.0",
+            port=self.web_port,
+            log_level="warning",
+            access_log=False,
+        )
+        server = uvicorn.Server(config)
+
+        structlog.get_logger().info(
+            "Web dashboard starting",
+            url=f"http://localhost:{self.web_port}",
+        )
+
+        try:
+            await server.serve()
+        except asyncio.CancelledError:
+            pass
 
     async def _wait_for_shutdown(self) -> None:
         """Wait for shutdown signal."""
