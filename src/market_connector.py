@@ -496,9 +496,9 @@ class MarketConnector:
 
             logger.info("WebSocket connected")
 
-            # Resubscribe to any previous subscriptions
-            for token_id in self._ws_subscriptions.copy():
-                await self._send_subscribe(token_id)
+            # Resubscribe to any previous subscriptions (send all at once)
+            if self._ws_subscriptions:
+                await self._send_subscribe(list(self._ws_subscriptions))
 
         except Exception as e:
             logger.error("WebSocket connection failed", error=str(e))
@@ -517,19 +517,23 @@ class MarketConnector:
             self._ws_connected = False
             logger.info("WebSocket closed")
 
-    async def _send_subscribe(self, token_id: str) -> None:
-        """Send subscription message for a token."""
+    async def _send_subscribe(self, token_ids: list[str] | str) -> None:
+        """Send subscription message for token(s)."""
         if not self._ws or not self._ws_connected:
             raise RuntimeError("WebSocket not connected")
 
+        # Ensure we have a list
+        if isinstance(token_ids, str):
+            token_ids = [token_ids]
+
+        # Polymarket expects this format for market channel
         subscribe_msg = {
-            "type": "subscribe",
-            "channel": "book",
-            "assets_id": token_id,
+            "assets_ids": token_ids,
+            "type": "market",
         }
 
         await self._ws.send_json(subscribe_msg)
-        logger.debug("Subscribed to orderbook", token_id=token_id)
+        logger.debug("Subscribed to orderbook", token_ids=token_ids)
 
     async def subscribe_orderbook(self, token_id: str) -> None:
         """Subscribe to order book updates for a token."""
@@ -541,15 +545,9 @@ class MarketConnector:
     async def unsubscribe_orderbook(self, token_id: str) -> None:
         """Unsubscribe from order book updates."""
         self._ws_subscriptions.discard(token_id)
-
-        if self._ws and self._ws_connected:
-            unsubscribe_msg = {
-                "type": "unsubscribe",
-                "channel": "book",
-                "assets_id": token_id,
-            }
-            await self._ws.send_json(unsubscribe_msg)
-            logger.debug("Unsubscribed from orderbook", token_id=token_id)
+        # Note: Polymarket may not support individual unsubscription
+        # The subscription is managed by reconnecting with updated assets_ids
+        logger.debug("Removed from subscription list", token_id=token_id)
 
     def on_orderbook_update(
         self, callback: Callable[[OrderBook], Coroutine[Any, Any, None]]
@@ -573,25 +571,49 @@ class MarketConnector:
             logger.warning("WebSocket closed")
             self._ws_connected = False
 
-    async def _handle_ws_data(self, data: dict) -> None:
+    async def _handle_ws_data(self, data: dict | list) -> None:
         """Handle parsed WebSocket data."""
-        msg_type = data.get("type", "")
+        # Handle array of events
+        if isinstance(data, list):
+            for item in data:
+                await self._handle_single_event(item)
+        else:
+            await self._handle_single_event(data)
 
-        if msg_type == "book":
-            # Order book update
+    async def _handle_single_event(self, data: dict) -> None:
+        """Handle a single WebSocket event."""
+        # Polymarket uses event_type or type
+        event_type = data.get("event_type") or data.get("type", "")
+
+        if event_type == "book":
+            # Full order book update
             token_id = data.get("asset_id", "")
             if not token_id:
                 return
 
-            # Parse bids and asks
-            bids = [
-                OrderBookLevel(price=float(b[0]), size=float(b[1]))
-                for b in data.get("bids", [])
-            ]
-            asks = [
-                OrderBookLevel(price=float(a[0]), size=float(a[1]))
-                for a in data.get("asks", [])
-            ]
+            # Parse bids and asks - handle both list and dict formats
+            raw_bids = data.get("bids", [])
+            raw_asks = data.get("asks", [])
+
+            bids = []
+            for b in raw_bids:
+                if isinstance(b, (list, tuple)) and len(b) >= 2:
+                    bids.append(OrderBookLevel(price=float(b[0]), size=float(b[1])))
+                elif isinstance(b, dict):
+                    bids.append(OrderBookLevel(
+                        price=float(b.get("price", 0)),
+                        size=float(b.get("size", 0))
+                    ))
+
+            asks = []
+            for a in raw_asks:
+                if isinstance(a, (list, tuple)) and len(a) >= 2:
+                    asks.append(OrderBookLevel(price=float(a[0]), size=float(a[1])))
+                elif isinstance(a, dict):
+                    asks.append(OrderBookLevel(
+                        price=float(a.get("price", 0)),
+                        size=float(a.get("size", 0))
+                    ))
 
             bids.sort(key=lambda x: x.price, reverse=True)
             asks.sort(key=lambda x: x.price)
@@ -612,8 +634,38 @@ class MarketConnector:
                 except Exception as e:
                     logger.error("Orderbook callback error", error=str(e))
 
-        elif msg_type == "error":
+        elif event_type == "price_change":
+            # Price change event - lighter than full book
+            token_id = data.get("asset_id", "")
+            if not token_id:
+                return
+
+            best_bid = float(data.get("best_bid", 0)) if data.get("best_bid") else None
+            best_ask = float(data.get("best_ask", 0)) if data.get("best_ask") else None
+
+            if best_bid is not None and best_ask is not None:
+                # Update or create minimal orderbook
+                orderbook = OrderBook(
+                    market_id=data.get("market", ""),
+                    token_id=token_id,
+                    bids=[OrderBookLevel(price=best_bid, size=0)] if best_bid else [],
+                    asks=[OrderBookLevel(price=best_ask, size=0)] if best_ask else [],
+                )
+
+                self._orderbooks[token_id] = orderbook
+
+                for callback in self._orderbook_callbacks:
+                    try:
+                        await callback(orderbook)
+                    except Exception as e:
+                        logger.error("Orderbook callback error", error=str(e))
+
+        elif event_type == "error":
             logger.error("WebSocket error message", error=data.get("message", "Unknown"))
+
+        elif event_type:
+            # Log unknown event types for debugging
+            logger.debug("Unknown WS event type", event_type=event_type)
 
     async def listen_websocket(self) -> None:
         """

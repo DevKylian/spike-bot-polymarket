@@ -247,8 +247,8 @@ class ConnectionConfig(BaseSettings):
         description="Polymarket CLOB REST API URL"
     )
     ws_url: str = Field(
-        default="wss://ws-subscriptions-clob.polymarket.com/ws",
-        description="Polymarket WebSocket URL"
+        default="wss://ws-subscriptions-clob.polymarket.com/ws/market",
+        description="Polymarket WebSocket URL for market data"
     )
 
     # Retry configuration
