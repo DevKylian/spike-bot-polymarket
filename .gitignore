@@ -39,7 +39,8 @@ env/
 *~
 
 # Logs
-logs/
+logs/*
+!logs/.gitkeep
 *.log
 bot.log
 
