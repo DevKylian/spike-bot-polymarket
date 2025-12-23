@@ -34,6 +34,7 @@ from src.backtesting.optimizer import (
     find_optimal_parameters,
 )
 from src.backtesting.models import BacktestConfig, ParameterSet
+from src.market_analyzer import MarketAnalyzer
 
 
 def setup_logging(verbose: bool = False):
@@ -285,6 +286,69 @@ async def cmd_analyze(args):
 
     end_date = datetime.now(timezone.utc)
     start_date = end_date - timedelta(days=args.days)
+
+    # Handle URL input - extract token IDs from Polymarket URL
+    if args.url:
+        print(f"Analyzing URL: {args.url}\n")
+
+        analyzer = MarketAnalyzer()
+        try:
+            async with analyzer:
+                result = await analyzer.analyze_url(args.url)
+
+                print("MARKET INFO:")
+                print("-" * 40)
+                print(f"  Question:     {result.market_info.question[:60]}...")
+                print(f"  Status:       {result.market_info.status.value}")
+                print(f"  Volume:       ${result.market_info.volume:,.0f}")
+                print(f"  Liquidity:    ${result.market_info.liquidity:,.0f}")
+                print(f"  Yes Price:    {result.market_info.yes_price:.2f}")
+                print(f"  No Price:     {result.market_info.no_price:.2f}")
+                print()
+
+                print("TOKEN IDs (use these for backtesting):")
+                print("-" * 40)
+                for token in result.market_info.tokens:
+                    token_id = token.get("token_id", "")
+                    outcome = token.get("outcome", "")
+                    print(f"  {outcome}: {token_id}")
+                print()
+
+                print("VIABILITY ANALYSIS:")
+                print("-" * 40)
+                print(f"  Score:        {result.viability_score:.0f}/100")
+                print(f"  Rating:       {result.viability.value.upper()}")
+                print(f"  Liquidity:    {result.liquidity_score:.0f}/100")
+                print(f"  Volume:       {result.volume_score:.0f}/100")
+                print(f"  Spread:       {result.spread_score:.0f}/100")
+                print()
+
+                if result.warnings:
+                    print("WARNINGS:")
+                    for w in result.warnings:
+                        print(f"  - {w}")
+                    print()
+
+                if result.recommendations:
+                    print("RECOMMENDATIONS:")
+                    for r in result.recommendations:
+                        print(f"  - {r}")
+                    print()
+
+                # Suggest backtest command
+                if result.market_info.tokens:
+                    token_id = result.market_info.tokens[0].get("token_id", "")
+                    if token_id:
+                        print("TO RUN BACKTEST:")
+                        print("-" * 40)
+                        print(f"  python -m src.backtesting.cli backtest --token {token_id} --days 30")
+                        print()
+
+        except Exception as e:
+            print(f"Error analyzing URL: {e}")
+            return 1
+
+        return 0
 
     async with HistoricalDataLoader(use_cache=not args.no_cache) as loader:
         if args.search:
@@ -546,6 +610,7 @@ Examples:
     # Analyze command
     an_parser = subparsers.add_parser("analyze", help="Analyze market data")
     an_parser.add_argument("--token", "-t", help="Token ID to analyze")
+    an_parser.add_argument("--url", "-u", help="Polymarket URL to analyze (e.g., https://polymarket.com/event/...)")
     an_parser.add_argument("--search", "-s", help="Search for markets")
     an_parser.add_argument("--days", "-d", type=int, default=7, help="Days of history")
     an_parser.add_argument("--no-cache", action="store_true", help="Don't use cached data")
