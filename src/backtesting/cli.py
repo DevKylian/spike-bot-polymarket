@@ -291,6 +291,12 @@ async def cmd_analyze(args):
     if args.url:
         print(f"Analyzing URL: {args.url}\n")
 
+        # Extract tid from URL if present
+        from urllib.parse import urlparse, parse_qs
+        parsed = urlparse(args.url)
+        query_params = parse_qs(parsed.query)
+        tid_from_url = query_params.get("tid", [None])[0]
+
         analyzer = MarketAnalyzer()
         try:
             async with analyzer:
@@ -310,13 +316,48 @@ async def cmd_analyze(args):
                 print(f"  No Price:     {result.market_info.no_price:.2f}")
                 print()
 
-                print("TOKEN IDs (use these for backtesting):")
-                print("-" * 40)
-                for token in result.market_info.tokens:
-                    token_id = token.get("token_id", "")
-                    outcome = token.get("outcome", "")
-                    print(f"  {outcome}: {token_id}")
-                print()
+                # Collect all token IDs
+                token_ids_found = []
+
+                # Check tokens from API response
+                if result.market_info.tokens:
+                    print("TOKEN IDs (use these for backtesting):")
+                    print("-" * 40)
+                    for token in result.market_info.tokens:
+                        token_id = token.get("token_id", "") or token.get("tokenId", "") or token.get("id", "")
+                        outcome = token.get("outcome", "")
+                        if token_id:
+                            print(f"  {outcome}: {token_id}")
+                            token_ids_found.append(token_id)
+                    print()
+
+                # Also check raw market data for clobTokenIds
+                raw_market = result.market_info.raw_market
+                if raw_market:
+                    clob_token_ids = raw_market.get("clobTokenIds", [])
+                    if clob_token_ids and not token_ids_found:
+                        print("TOKEN IDs (from CLOB):")
+                        print("-" * 40)
+                        for i, tid in enumerate(clob_token_ids):
+                            label = "YES" if i == 0 else "NO" if i == 1 else f"Option {i}"
+                            print(f"  {label}: {tid}")
+                            token_ids_found.append(tid)
+                        print()
+
+                # If tid was in URL, show it
+                if tid_from_url and tid_from_url not in token_ids_found:
+                    print("TOKEN ID (from URL parameter):")
+                    print("-" * 40)
+                    print(f"  tid: {tid_from_url}")
+                    token_ids_found.append(tid_from_url)
+                    print()
+
+                # If still no tokens, check condition_id
+                if not token_ids_found and result.market_info.condition_id:
+                    print("CONDITION ID (use to find tokens):")
+                    print("-" * 40)
+                    print(f"  {result.market_info.condition_id}")
+                    print()
 
                 print("VIABILITY ANALYSIS:")
                 print("-" * 40)
@@ -340,16 +381,17 @@ async def cmd_analyze(args):
                     print()
 
                 # Suggest backtest command
-                if result.market_info.tokens:
-                    token_id = result.market_info.tokens[0].get("token_id", "")
-                    if token_id:
-                        print("TO RUN BACKTEST:")
-                        print("-" * 40)
-                        print(f"  python -m src.backtesting.cli backtest --token {token_id} --days 30")
-                        print()
+                token_for_backtest = tid_from_url or (token_ids_found[0] if token_ids_found else None)
+                if token_for_backtest:
+                    print("TO RUN BACKTEST:")
+                    print("-" * 40)
+                    print(f"  python -m src.backtesting.cli backtest --token {token_for_backtest} --days 30")
+                    print()
 
         except Exception as e:
             print(f"Error analyzing URL: {e}")
+            import traceback
+            traceback.print_exc()
             return 1
 
         return 0
