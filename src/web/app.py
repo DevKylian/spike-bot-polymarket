@@ -474,6 +474,116 @@ def create_app(dashboard: "WebDashboard | None" = None) -> FastAPI:
             return await dashboard.stop_trading_on_token()
         return {"error": "Dashboard not initialized"}
 
+    @app.post("/api/backtest")
+    async def run_backtest(request: Request):
+        """Run a backtest with given parameters."""
+        try:
+            params = await request.json()
+
+            token_id = params.get("token", "")
+            days = params.get("days", 30)
+            threshold = params.get("threshold", 3.0)
+            window = params.get("window", 2.0)
+            take_profit = params.get("take_profit", 2.0)
+            stop_loss = params.get("stop_loss", 5.0)
+            capital = params.get("capital", 10000)
+            simulate = params.get("simulate", False)
+
+            if not token_id:
+                return {"error": "Token ID is required"}
+
+            # Import backtesting modules
+            from datetime import timedelta
+            from src.backtesting.data_loader import HistoricalDataLoader
+            from src.backtesting.engine import BacktestEngine, BacktestConfig
+            from src.backtesting.models import MarketData
+
+            end_date = datetime.now(timezone.utc)
+            start_date = end_date - timedelta(days=days)
+
+            async with HistoricalDataLoader(use_cache=True) as loader:
+                is_simulated = False
+
+                if simulate:
+                    # Generate simulated data
+                    prices = loader.generate_simulated_data(
+                        start_date=start_date,
+                        end_date=end_date,
+                        initial_price=0.5,
+                        volatility=0.02,
+                        spike_probability=0.01,
+                        spike_magnitude=0.15,
+                        interval_minutes=1,
+                    )
+                    is_simulated = True
+                else:
+                    # Try to get real data with simulation fallback
+                    prices, is_simulated = await loader.get_price_history_with_simulation(
+                        token_id,
+                        start_date,
+                        end_date,
+                        interval="1m",
+                        use_simulation_if_no_data=True,
+                    )
+
+                if not prices:
+                    return {"error": "No price data available"}
+
+                # Create market data
+                market_data = MarketData(
+                    token_id=token_id,
+                    market_name="Simulated Market" if is_simulated else "Market",
+                    condition_id=token_id,
+                    start_date=start_date,
+                    end_date=end_date,
+                    prices=prices,
+                    ohlcv=[],
+                    total_volume=sum(p.volume for p in prices),
+                    avg_daily_volume=sum(p.volume for p in prices) / max(days, 1),
+                    avg_spread=0.01,
+                    liquidity_score=50 if is_simulated else 0,
+                )
+
+                # Create backtest config
+                config = BacktestConfig(
+                    initial_capital=capital,
+                    position_size_usdc=100.0,
+                    spike_threshold_percent=threshold,
+                    spike_window_seconds=window,
+                    take_profit_percent=take_profit,
+                    stop_loss_percent=stop_loss,
+                    max_positions=3,
+                    trading_fee_percent=0.1,
+                )
+
+                # Run backtest
+                engine = BacktestEngine(config)
+                result = engine.run({token_id: market_data})
+
+                # Build equity curve
+                equity_curve = [capital]
+                current = capital
+                for trade in result.trades:
+                    current += trade.pnl
+                    equity_curve.append(current)
+
+                return {
+                    "total_return": result.metrics.total_return_percent,
+                    "total_trades": result.metrics.total_trades,
+                    "win_rate": result.metrics.win_rate * 100,
+                    "sharpe_ratio": result.metrics.sharpe_ratio,
+                    "total_pnl": result.metrics.net_profit,
+                    "max_drawdown": result.metrics.max_drawdown_percent,
+                    "avg_win": result.metrics.average_win,
+                    "avg_loss": result.metrics.average_loss,
+                    "equity_curve": equity_curve,
+                    "is_simulated": is_simulated,
+                }
+
+        except Exception as e:
+            logger.error("Backtest error", error=str(e))
+            return {"error": str(e)}
+
     @app.websocket("/ws")
     async def websocket_endpoint(websocket: WebSocket):
         """WebSocket endpoint for real-time updates."""
