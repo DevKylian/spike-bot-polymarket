@@ -352,7 +352,7 @@ class SpikeBot:
         if "take_profit" in config:
             self.config.trading.take_profit_percent = config["take_profit"]
         if "max_positions" in config:
-            self.config.risk.max_concurrent_positions = config["max_positions"]
+            self.config.risk.max_open_positions = config["max_positions"]
 
         # Update strategy engine if exists
         if self.strategy and hasattr(self.strategy, 'engine'):

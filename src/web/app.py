@@ -123,7 +123,7 @@ class WebDashboard:
             "order_amount": config.trading.order_amount_usdc,
             "stop_loss": config.risk.stop_loss_percent,
             "take_profit": config.trading.take_profit_percent,
-            "max_positions": config.risk.max_concurrent_positions,
+            "max_positions": config.risk.max_open_positions,
         }
 
         # Statistics
