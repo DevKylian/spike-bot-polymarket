@@ -417,65 +417,94 @@ class HistoricalDataLoader:
         interval: str,
     ) -> list[PriceData]:
         """Fetch price history from Gamma API."""
-        # Gamma API uses markets endpoint with timeseries
-        url = f"{GAMMA_API_URL}/prices"
+        prices = []
 
-        # Convert interval to Gamma format
-        interval_map = {
-            "1m": "1min",
-            "5m": "5min",
-            "15m": "15min",
-            "1h": "1hour",
-            "4h": "4hour",
-            "1d": "1day",
-        }
-        gamma_interval = interval_map.get(interval, "1min")
-
-        # Gamma expects timestamps in milliseconds
-        start_ts = int(start_date.timestamp() * 1000)
-        end_ts = int(end_date.timestamp() * 1000)
-
+        # Method 1: Try the prices/history endpoint with clob_token_id
+        url = f"{GAMMA_API_URL}/prices/history"
         params = {
-            "market": token_id,
-            "interval": gamma_interval,
-            "startTs": start_ts,
-            "endTs": end_ts,
-            "fidelity": 100,  # Number of data points
+            "clob_token_id": token_id,
+            "interval": "max",  # Get all available data
         }
-
         data = await self._request(url, params)
 
-        if not data:
-            # Try alternative endpoint
-            url = f"{GAMMA_API_URL}/timeseries"
-            data = await self._request(url, params)
+        if data and isinstance(data, dict) and "history" in data:
+            for point in data["history"]:
+                try:
+                    ts = point.get("t")
+                    if isinstance(ts, (int, float)):
+                        timestamp = datetime.fromtimestamp(ts / 1000 if ts > 1e10 else ts, tz=timezone.utc)
+                    else:
+                        continue
 
-        if not data:
-            return []
+                    price = point.get("p")
+                    if price is None:
+                        continue
 
-        # Parse response
-        prices = []
-        history = data if isinstance(data, list) else data.get("history", [])
-
-        for point in history:
-            try:
-                ts = point.get("t") or point.get("timestamp")
-                if isinstance(ts, (int, float)):
-                    timestamp = datetime.fromtimestamp(ts / 1000 if ts > 1e10 else ts, tz=timezone.utc)
-                else:
-                    timestamp = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
-
-                price = point.get("p") or point.get("price") or point.get("close")
-                if price is None:
+                    # Filter by date range
+                    if start_date <= timestamp <= end_date:
+                        prices.append(PriceData(
+                            timestamp=timestamp,
+                            price=float(price),
+                            volume=0,
+                        ))
+                except (ValueError, KeyError, TypeError):
                     continue
 
-                prices.append(PriceData(
-                    timestamp=timestamp,
-                    price=float(price),
-                    volume=float(point.get("v", 0) or point.get("volume", 0)),
-                ))
-            except (ValueError, KeyError, TypeError):
-                continue
+        # Method 2: Try market-specific endpoint
+        if not prices:
+            url = f"{GAMMA_API_URL}/markets/{token_id}/prices"
+            data = await self._request(url)
+
+            if data and isinstance(data, list):
+                for point in data:
+                    try:
+                        ts = point.get("timestamp") or point.get("t")
+                        if isinstance(ts, str):
+                            timestamp = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+                        elif isinstance(ts, (int, float)):
+                            timestamp = datetime.fromtimestamp(ts / 1000 if ts > 1e10 else ts, tz=timezone.utc)
+                        else:
+                            continue
+
+                        price = point.get("price") or point.get("p")
+                        if price is None:
+                            continue
+
+                        if start_date <= timestamp <= end_date:
+                            prices.append(PriceData(
+                                timestamp=timestamp,
+                                price=float(price),
+                                volume=float(point.get("volume", 0)),
+                            ))
+                    except (ValueError, KeyError, TypeError):
+                        continue
+
+        # Method 3: Try CLOB book snapshots to get current price at least
+        if not prices:
+            url = f"{CLOB_API_URL}/book"
+            params = {"token_id": token_id}
+            data = await self._request(url, params)
+
+            if data:
+                try:
+                    bids = data.get("bids", [])
+                    asks = data.get("asks", [])
+
+                    best_bid = float(bids[0]["price"]) if bids else None
+                    best_ask = float(asks[0]["price"]) if asks else None
+
+                    if best_bid and best_ask:
+                        mid_price = (best_bid + best_ask) / 2
+                        prices.append(PriceData(
+                            timestamp=datetime.now(timezone.utc),
+                            price=mid_price,
+                            volume=0,
+                            bid=best_bid,
+                            ask=best_ask,
+                        ))
+                        logger.info(f"Got current price from order book: {mid_price}")
+                except (ValueError, KeyError, TypeError, IndexError):
+                    pass
 
         return prices
 
