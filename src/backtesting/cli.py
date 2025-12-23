@@ -299,11 +299,24 @@ async def cmd_analyze(args):
             print(f"Found {len(markets)} markets:\n")
             for m in markets[:10]:
                 question = m.get("question", "")[:60]
-                cond_id = m.get("condition_id", "")
+                cond_id = m.get("condition_id", "") or m.get("conditionId", "") or m.get("id", "")
+
+                # Get token IDs for trading
+                tokens = m.get("tokens", [])
+                token_ids = [t.get("token_id", "") for t in tokens] if tokens else []
+
+                # Handle volume as string or number
                 volume = m.get("volume", 0)
+                try:
+                    volume = float(volume) if volume else 0
+                except (ValueError, TypeError):
+                    volume = 0
+
                 print(f"  {question}...")
-                print(f"    ID: {cond_id}")
-                print(f"    Volume: ${volume:,.0f}")
+                print(f"    Condition ID: {cond_id}")
+                if token_ids:
+                    print(f"    Token IDs:    {', '.join(token_ids[:2])}")
+                print(f"    Volume:       ${volume:,.0f}")
                 print()
 
         elif args.token:
