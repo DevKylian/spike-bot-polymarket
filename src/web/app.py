@@ -166,13 +166,61 @@ class WebDashboard:
             if not result:
                 return {"error": "Could not analyze market. Check the URL."}
 
+            # Normalize tokens to always have token_id field
+            normalized_tokens = []
+            raw_tokens = result.market_info.tokens or []
+
+            for i, token in enumerate(raw_tokens):
+                # Try multiple possible field names for token ID
+                token_id = (
+                    token.get("token_id", "") or
+                    token.get("tokenId", "") or
+                    token.get("id", "") or
+                    ""
+                )
+                outcome = token.get("outcome", "YES" if i == 0 else "NO")
+                price = float(token.get("price", 0) or 0)
+
+                normalized_tokens.append({
+                    "token_id": token_id,
+                    "outcome": outcome,
+                    "price": price,
+                })
+
+            # If no token IDs found, try clobTokenIds from raw market data
+            if not any(t["token_id"] for t in normalized_tokens):
+                raw_market = result.market_info.raw_market or {}
+                clob_token_ids = raw_market.get("clobTokenIds", [])
+
+                # Parse if it's a JSON string
+                if isinstance(clob_token_ids, str):
+                    try:
+                        clob_token_ids = json.loads(clob_token_ids)
+                    except (json.JSONDecodeError, TypeError):
+                        clob_token_ids = []
+
+                if clob_token_ids and isinstance(clob_token_ids, list):
+                    # Use clobTokenIds to populate token_id
+                    for i, tid in enumerate(clob_token_ids):
+                        if isinstance(tid, str) and len(tid) > 10:
+                            if i < len(normalized_tokens):
+                                normalized_tokens[i]["token_id"] = tid
+                            else:
+                                outcome = "YES" if i == 0 else "NO" if i == 1 else f"Option {i}"
+                                price = result.market_info.yes_price if i == 0 else result.market_info.no_price
+                                normalized_tokens.append({
+                                    "token_id": tid,
+                                    "outcome": outcome,
+                                    "price": price,
+                                })
+
             # Store as current market
             self.current_market = {
                 "question": result.market_info.question,
                 "category": result.market_info.category,
                 "status": result.market_info.status.value,
                 "condition_id": result.market_info.condition_id,
-                "tokens": result.market_info.tokens,
+                "tokens": normalized_tokens,
                 "yes_price": result.market_info.yes_price,
                 "no_price": result.market_info.no_price,
                 "volume": result.market_info.volume,

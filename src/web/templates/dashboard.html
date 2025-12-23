@@ -493,6 +493,8 @@
 
         .token-btn:hover { border-color: var(--accent-blue); }
         .token-btn.active { border-color: var(--accent-blue); background: var(--accent-blue-dim); }
+        .token-btn.invalid { border-color: var(--danger); opacity: 0.6; cursor: not-allowed; }
+        .token-btn.invalid:hover { border-color: var(--danger); }
         .token-btn .outcome { font-weight: 600; font-size: 0.85rem; }
         .token-btn .price { font-size: 1.2rem; font-weight: 700; }
 
@@ -1483,20 +1485,45 @@
                 return;
             }
 
-            elements.tokenSelector.innerHTML = tokens.map((token, i) => `
-                <div class="token-btn" data-token-id="${token.token_id || ''}" onclick="selectToken(this)">
-                    <div class="outcome">${token.outcome || (i === 0 ? 'YES' : 'NO')}</div>
-                    <div class="price">${(token.price || 0.5).toFixed(2)}</div>
-                </div>
-            `).join('');
+            // Check if any token has a valid ID
+            const hasValidTokens = tokens.some(t => t.token_id && t.token_id.length > 10);
+            if (!hasValidTokens) {
+                addLog('Warning: No valid token IDs found for this market', 'warn');
+            }
+
+            elements.tokenSelector.innerHTML = tokens.map((token, i) => {
+                const tokenId = token.token_id || '';
+                const isValid = tokenId.length > 10;
+                const outcome = token.outcome || (i === 0 ? 'YES' : 'NO');
+                const price = parseFloat(token.price) || 0.5;
+
+                return `
+                    <div class="token-btn ${!isValid ? 'invalid' : ''}"
+                         data-token-id="${tokenId}"
+                         onclick="selectToken(this)"
+                         title="${isValid ? tokenId.substring(0, 30) + '...' : 'No token ID available'}">
+                        <div class="outcome">${outcome}</div>
+                        <div class="price">${price.toFixed(2)}</div>
+                        ${!isValid ? '<div style="font-size: 0.6rem; color: var(--danger);">No ID</div>' : ''}
+                    </div>
+                `;
+            }).join('');
         }
 
         function selectToken(element) {
+            const tokenId = element.dataset.tokenId;
+
+            // Check if token ID is valid
+            if (!tokenId || tokenId.length < 10) {
+                addLog('Cannot select token: No valid token ID available', 'error');
+                return;
+            }
+
             document.querySelectorAll('.token-btn').forEach(btn => btn.classList.remove('active'));
             element.classList.add('active');
-            state.selectedTokenId = element.dataset.tokenId;
+            state.selectedTokenId = tokenId;
             elements.startBtn.disabled = !state.selectedTokenId || state.isTrading;
-            addLog(`Selected token: ${state.selectedTokenId.substring(0, 20)}...`, 'info');
+            addLog(`Selected token: ${tokenId.substring(0, 30)}...`, 'info');
         }
 
         async function applyConfig() {
@@ -1528,12 +1555,13 @@
         }
 
         async function startTrading() {
-            if (!state.selectedTokenId) {
-                addLog('Please select a token first', 'warn');
+            if (!state.selectedTokenId || state.selectedTokenId.length < 10) {
+                addLog('Please select a token to trade. Click on YES or NO button above.', 'warn');
                 return;
             }
 
             try {
+                addLog(`Starting trading on token ${state.selectedTokenId.substring(0, 20)}...`, 'info');
                 const response = await fetch('/api/trading/start', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
