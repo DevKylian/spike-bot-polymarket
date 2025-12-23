@@ -619,14 +619,14 @@ def create_app(dashboard: "WebDashboard | None" = None) -> FastAPI:
                     equity_curve.append(current)
 
                 return {
-                    "total_return": result.metrics.total_return_percent,
-                    "total_trades": result.metrics.total_trades,
-                    "win_rate": result.metrics.win_rate * 100,
-                    "sharpe_ratio": result.metrics.sharpe_ratio,
-                    "total_pnl": result.metrics.net_profit,
-                    "max_drawdown": result.metrics.max_drawdown_percent,
-                    "avg_win": result.metrics.average_win,
-                    "avg_loss": result.metrics.average_loss,
+                    "total_return": result.metrics.get("total_return_percent", 0),
+                    "total_trades": result.metrics.get("total_trades", 0),
+                    "win_rate": result.metrics.get("win_rate_percent", 0),
+                    "sharpe_ratio": result.metrics.get("sharpe_ratio", 0),
+                    "total_pnl": result.metrics.get("total_pnl", 0),
+                    "max_drawdown": result.metrics.get("max_drawdown_percent", 0),
+                    "avg_win": result.metrics.get("avg_win", 0),
+                    "avg_loss": result.metrics.get("avg_loss", 0),
                     "equity_curve": equity_curve,
                     "is_simulated": is_simulated,
                 }
