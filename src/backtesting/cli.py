@@ -294,7 +294,11 @@ async def cmd_analyze(args):
         analyzer = MarketAnalyzer()
         try:
             async with analyzer:
-                result = await analyzer.analyze_url(args.url)
+                result = await analyzer.analyze_from_url(args.url)
+
+                if result is None:
+                    print("Could not analyze this URL. Make sure it's a valid Polymarket market URL.")
+                    return 1
 
                 print("MARKET INFO:")
                 print("-" * 40)
