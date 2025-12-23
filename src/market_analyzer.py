@@ -300,13 +300,39 @@ class MarketAnalyzer:
             market_info.liquidity = float(market_data.get("liquidity", 0) or 0)
             market_info.volume_24h = float(market_data.get("volume24hr", 0) or market_data.get("volume_24h", 0) or 0)
 
-            # Status
-            if market_data.get("closed"):
+            # Status - handle both boolean and string values
+            def is_truthy(val) -> bool:
+                if val is None:
+                    return False
+                if isinstance(val, bool):
+                    return val
+                if isinstance(val, str):
+                    return val.lower() in ("true", "1", "yes")
+                return bool(val)
+
+            closed = is_truthy(market_data.get("closed"))
+            resolved = is_truthy(market_data.get("resolved"))
+            active = market_data.get("active")
+            accepting_orders = market_data.get("acceptingOrders")
+
+            logger.debug(
+                "Market status fields",
+                closed=market_data.get("closed"),
+                resolved=market_data.get("resolved"),
+                active=active,
+                accepting_orders=accepting_orders,
+            )
+
+            if closed:
                 market_info.status = MarketStatus.CLOSED
-            elif market_data.get("resolved"):
+            elif resolved:
                 market_info.status = MarketStatus.RESOLVED
-            elif market_data.get("active", True):
+            elif is_truthy(accepting_orders) or is_truthy(active) or (active is None and not closed and not resolved):
+                # Market is active if acceptingOrders is true, active is true,
+                # or if no status fields are set (assume active by default)
                 market_info.status = MarketStatus.ACTIVE
+            else:
+                market_info.status = MarketStatus.UNKNOWN
 
             # End date
             end_date_str = market_data.get("endDate") or market_data.get("end_date")
@@ -332,10 +358,17 @@ class MarketAnalyzer:
         result = AnalysisResult(market_info=market_info)
 
         # 1. Check market status
-        if market_info.status != MarketStatus.ACTIVE:
-            result.warnings.append(f"Market is {market_info.status.value}, not active")
+        if market_info.status == MarketStatus.CLOSED:
+            result.warnings.append("Market is closed")
             result.viability = TradingViability.NOT_RECOMMENDED
             return result
+        elif market_info.status == MarketStatus.RESOLVED:
+            result.warnings.append("Market is already resolved")
+            result.viability = TradingViability.NOT_RECOMMENDED
+            return result
+        elif market_info.status == MarketStatus.UNKNOWN:
+            # Unknown status - continue analysis but add warning
+            result.warnings.append("Could not determine market status - proceeding with analysis")
 
         # 2. Check time to expiry
         if market_info.end_date:
