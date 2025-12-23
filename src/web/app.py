@@ -8,18 +8,41 @@ import asyncio
 import json
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, Coroutine
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from pydantic import BaseModel
 
 import structlog
 
 from ..config import BotConfig
+from ..market_analyzer import MarketAnalyzer, AnalysisResult
 
 logger = structlog.get_logger(__name__)
+
+
+class AnalyzeRequest(BaseModel):
+    """Request to analyze a market URL."""
+    url: str
+
+
+class ConfigUpdate(BaseModel):
+    """Configuration update request."""
+    spike_threshold: float | None = None
+    spike_window: float | None = None
+    order_amount: float | None = None
+    stop_loss: float | None = None
+    take_profit: float | None = None
+    max_positions: int | None = None
+
+
+class TradingStartRequest(BaseModel):
+    """Request to start trading."""
+    token_id: str
+    market_info: dict | None = None
 
 # Path to templates and static files
 WEB_DIR = Path(__file__).parent
@@ -70,20 +93,38 @@ class WebDashboard:
     - Position and P&L monitoring
     - Bot control (start/stop/pause)
     - Trade history
+    - Market URL analysis
+    - Real-time configuration
     """
 
     def __init__(self, config: BotConfig):
         self.config = config
         self.app = create_app(self)
         self.manager = ConnectionManager()
+        self.analyzer = MarketAnalyzer()
 
         # Bot state (will be updated by main bot)
         self.bot_status = "stopped"
         self.is_paper_trading = config.is_paper_trading
+        self.is_trading = False
+
+        # Current market focus (single market mode)
+        self.current_market: dict | None = None
+        self.current_token_id: str | None = None
 
         # Market data
         self.markets: dict[str, dict] = {}
         self.positions: dict[str, dict] = {}
+
+        # Dynamic configuration (can be modified at runtime)
+        self.runtime_config = {
+            "spike_threshold": config.trading.spike_threshold_percent,
+            "spike_window": config.trading.spike_window_seconds,
+            "order_amount": config.trading.order_amount_usdc,
+            "stop_loss": config.risk.stop_loss_percent,
+            "take_profit": config.trading.take_profit_percent,
+            "max_positions": config.risk.max_concurrent_positions,
+        }
 
         # Statistics
         self.stats = {
@@ -100,6 +141,126 @@ class WebDashboard:
 
         # Price history for charts (token_id -> list of {timestamp, price})
         self.price_history: dict[str, list[dict]] = {}
+
+        # Callbacks for trading control
+        self._on_start_trading: Callable[[str, dict], Coroutine[Any, Any, bool]] | None = None
+        self._on_stop_trading: Callable[[], Coroutine[Any, Any, bool]] | None = None
+        self._on_config_change: Callable[[dict], Coroutine[Any, Any, None]] | None = None
+
+    def on_start_trading(self, callback: Callable[[str, dict], Coroutine[Any, Any, bool]]) -> None:
+        """Register callback for when trading starts."""
+        self._on_start_trading = callback
+
+    def on_stop_trading(self, callback: Callable[[], Coroutine[Any, Any, bool]]) -> None:
+        """Register callback for when trading stops."""
+        self._on_stop_trading = callback
+
+    def on_config_change(self, callback: Callable[[dict], Coroutine[Any, Any, None]]) -> None:
+        """Register callback for configuration changes."""
+        self._on_config_change = callback
+
+    async def analyze_market_url(self, url: str) -> dict:
+        """Analyze a Polymarket URL and return market info with viability."""
+        try:
+            result = await self.analyzer.analyze_from_url(url)
+            if not result:
+                return {"error": "Could not analyze market. Check the URL."}
+
+            # Store as current market
+            self.current_market = {
+                "question": result.market_info.question,
+                "category": result.market_info.category,
+                "status": result.market_info.status.value,
+                "condition_id": result.market_info.condition_id,
+                "tokens": result.market_info.tokens,
+                "yes_price": result.market_info.yes_price,
+                "no_price": result.market_info.no_price,
+                "volume": result.market_info.volume,
+                "liquidity": result.market_info.liquidity,
+                "viability": result.viability.value,
+                "viability_score": result.viability_score,
+                "liquidity_score": result.liquidity_score,
+                "volume_score": result.volume_score,
+                "spread_score": result.spread_score,
+                "volatility_score": result.volatility_score,
+                "warnings": result.warnings,
+                "recommendations": result.recommendations,
+                "suggested_order_size": result.suggested_order_size,
+                "max_position": result.max_position,
+                "suggested_spike_threshold": result.suggested_spike_threshold,
+            }
+
+            return self.current_market
+
+        except Exception as e:
+            logger.error("Market analysis failed", error=str(e))
+            return {"error": f"Analysis failed: {str(e)}"}
+
+    async def update_config(self, config: dict) -> dict:
+        """Update runtime configuration."""
+        for key, value in config.items():
+            if key in self.runtime_config and value is not None:
+                self.runtime_config[key] = value
+
+        # Notify callback
+        if self._on_config_change:
+            await self._on_config_change(self.runtime_config)
+
+        # Broadcast update
+        await self.manager.broadcast({
+            "type": "config_updated",
+            "data": self.runtime_config,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        })
+
+        return {"status": "ok", "config": self.runtime_config}
+
+    async def start_trading_on_token(self, token_id: str, market_info: dict | None = None) -> dict:
+        """Start trading on a specific token."""
+        if self.is_trading:
+            return {"error": "Already trading. Stop first."}
+
+        self.current_token_id = token_id
+        if market_info:
+            self.current_market = market_info
+
+        if self._on_start_trading:
+            success = await self._on_start_trading(token_id, self.runtime_config)
+            if success:
+                self.is_trading = True
+                self.bot_status = "running"
+                await self.manager.broadcast({
+                    "type": "trading_started",
+                    "data": {"token_id": token_id},
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                })
+                return {"status": "started", "token_id": token_id}
+            else:
+                return {"error": "Failed to start trading"}
+
+        # If no callback, just update state
+        self.is_trading = True
+        self.bot_status = "running"
+        return {"status": "started", "token_id": token_id}
+
+    async def stop_trading_on_token(self) -> dict:
+        """Stop trading."""
+        if not self.is_trading:
+            return {"error": "Not currently trading"}
+
+        if self._on_stop_trading:
+            await self._on_stop_trading()
+
+        self.is_trading = False
+        self.bot_status = "stopped"
+
+        await self.manager.broadcast({
+            "type": "trading_stopped",
+            "data": {},
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        })
+
+        return {"status": "stopped"}
 
     def start(self):
         """Mark bot as started."""
@@ -184,13 +345,10 @@ class WebDashboard:
         return {
             "status": self.bot_status,
             "is_paper_trading": self.is_paper_trading,
-            "config": {
-                "spike_threshold": self.config.trading.spike_threshold_percent,
-                "spike_window": self.config.trading.spike_window_seconds,
-                "order_amount": self.config.trading.order_amount_usdc,
-                "stop_loss": self.config.risk.stop_loss_percent,
-                "take_profit": self.config.trading.take_profit_percent,
-            },
+            "is_trading": self.is_trading,
+            "config": self.runtime_config,
+            "current_market": self.current_market,
+            "current_token_id": self.current_token_id,
             "stats": self.stats,
             "markets": self.markets,
             "positions": self.positions,
@@ -282,6 +440,38 @@ def create_app(dashboard: "WebDashboard | None" = None) -> FastAPI:
         if dashboard:
             dashboard.start()
             return {"status": "running"}
+        return {"error": "Dashboard not initialized"}
+
+    @app.post("/api/analyze")
+    async def analyze_market(request: AnalyzeRequest):
+        """Analyze a Polymarket URL."""
+        if dashboard:
+            return await dashboard.analyze_market_url(request.url)
+        return {"error": "Dashboard not initialized"}
+
+    @app.post("/api/config")
+    async def update_config(request: ConfigUpdate):
+        """Update trading configuration."""
+        if dashboard:
+            config_dict = request.model_dump(exclude_none=True)
+            return await dashboard.update_config(config_dict)
+        return {"error": "Dashboard not initialized"}
+
+    @app.post("/api/trading/start")
+    async def start_trading(request: TradingStartRequest):
+        """Start trading on a specific token."""
+        if dashboard:
+            return await dashboard.start_trading_on_token(
+                request.token_id,
+                request.market_info
+            )
+        return {"error": "Dashboard not initialized"}
+
+    @app.post("/api/trading/stop")
+    async def stop_trading():
+        """Stop trading."""
+        if dashboard:
+            return await dashboard.stop_trading_on_token()
         return {"error": "Dashboard not initialized"}
 
     @app.websocket("/ws")

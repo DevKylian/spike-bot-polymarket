@@ -138,6 +138,9 @@ class SpikeBot:
             if self.dashboard:
                 self.connector.on_orderbook_update(self._on_orderbook_for_dashboard)
                 self.strategy.engine.on_signal(self._on_signal_for_dashboard)
+                self.dashboard.on_start_trading(self._on_start_trading_from_dashboard)
+                self.dashboard.on_stop_trading(self._on_stop_trading_from_dashboard)
+                self.dashboard.on_config_change(self._on_config_change_from_dashboard)
                 self.dashboard.start()
 
             # Start background tasks
@@ -283,6 +286,77 @@ class SpikeBot:
                 "suggested_side": signal.suggested_side.value,
                 "confidence": signal.confidence,
             })
+
+    async def _on_start_trading_from_dashboard(self, token_id: str, config: dict) -> bool:
+        """Handle trading start request from dashboard."""
+        try:
+            structlog.get_logger().info(
+                "Starting trading from dashboard",
+                token_id=token_id,
+                config=config,
+            )
+
+            # Update config if provided
+            if config:
+                if "spike_threshold" in config:
+                    self.config.trading.spike_threshold_percent = config["spike_threshold"]
+                if "spike_window" in config:
+                    self.config.trading.spike_window_seconds = config["spike_window"]
+                if "order_amount" in config:
+                    self.config.trading.order_amount_usdc = config["order_amount"]
+                if "stop_loss" in config:
+                    self.config.risk.stop_loss_percent = config["stop_loss"]
+                if "take_profit" in config:
+                    self.config.trading.take_profit_percent = config["take_profit"]
+
+            # Subscribe to the new token
+            if self.connector:
+                await self.connector.subscribe_orderbook(token_id)
+
+            # Add to strategy monitoring
+            if self.strategy:
+                await self.strategy.add_market(token_id)
+
+            return True
+        except Exception as e:
+            structlog.get_logger().error("Failed to start trading", error=str(e))
+            return False
+
+    async def _on_stop_trading_from_dashboard(self) -> bool:
+        """Handle trading stop request from dashboard."""
+        try:
+            structlog.get_logger().info("Stopping trading from dashboard")
+
+            # Cancel all orders
+            if self.connector:
+                await self.connector.cancel_all_orders()
+
+            return True
+        except Exception as e:
+            structlog.get_logger().error("Failed to stop trading", error=str(e))
+            return False
+
+    async def _on_config_change_from_dashboard(self, config: dict) -> None:
+        """Handle configuration change from dashboard."""
+        structlog.get_logger().info("Configuration updated from dashboard", config=config)
+
+        # Update bot config
+        if "spike_threshold" in config:
+            self.config.trading.spike_threshold_percent = config["spike_threshold"]
+        if "spike_window" in config:
+            self.config.trading.spike_window_seconds = config["spike_window"]
+        if "order_amount" in config:
+            self.config.trading.order_amount_usdc = config["order_amount"]
+        if "stop_loss" in config:
+            self.config.risk.stop_loss_percent = config["stop_loss"]
+        if "take_profit" in config:
+            self.config.trading.take_profit_percent = config["take_profit"]
+        if "max_positions" in config:
+            self.config.risk.max_concurrent_positions = config["max_positions"]
+
+        # Update strategy engine if exists
+        if self.strategy and hasattr(self.strategy, 'engine'):
+            self.strategy.engine.config = self.config
 
     async def _run_web_server(self) -> None:
         """Run the web dashboard server."""
