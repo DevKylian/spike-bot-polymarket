@@ -333,23 +333,31 @@ async def cmd_analyze(args):
 
                 # Also check raw market data for clobTokenIds
                 raw_market = result.market_info.raw_market
-                if raw_market:
+                if raw_market and not token_ids_found:
+                    # clobTokenIds might be a JSON string or a list
                     clob_token_ids = raw_market.get("clobTokenIds", [])
-                    if clob_token_ids and not token_ids_found:
+
+                    # Parse if it's a string
+                    if isinstance(clob_token_ids, str):
+                        try:
+                            import json
+                            clob_token_ids = json.loads(clob_token_ids)
+                        except:
+                            clob_token_ids = []
+
+                    if clob_token_ids and isinstance(clob_token_ids, list):
                         print("TOKEN IDs (from CLOB):")
                         print("-" * 40)
                         for i, tid in enumerate(clob_token_ids):
-                            label = "YES" if i == 0 else "NO" if i == 1 else f"Option {i}"
-                            print(f"  {label}: {tid}")
-                            token_ids_found.append(tid)
+                            if isinstance(tid, str) and len(tid) > 10:  # Valid token IDs are long
+                                label = "YES" if i == 0 else "NO" if i == 1 else f"Option {i}"
+                                print(f"  {label}: {tid}")
+                                token_ids_found.append(tid)
                         print()
 
-                # If tid was in URL, show it
-                if tid_from_url and tid_from_url not in token_ids_found:
-                    print("TOKEN ID (from URL parameter):")
-                    print("-" * 40)
-                    print(f"  tid: {tid_from_url}")
-                    token_ids_found.append(tid_from_url)
+                # If tid was in URL, note that it's NOT the trading token ID
+                if tid_from_url:
+                    print("NOTE: The 'tid' in URL is a UI identifier, not a trading token ID.")
                     print()
 
                 # If still no tokens, check condition_id
@@ -380,12 +388,17 @@ async def cmd_analyze(args):
                         print(f"  - {r}")
                     print()
 
-                # Suggest backtest command
-                token_for_backtest = tid_from_url or (token_ids_found[0] if token_ids_found else None)
+                # Suggest backtest command - use the real token ID, not tid from URL
+                token_for_backtest = token_ids_found[0] if token_ids_found else None
                 if token_for_backtest:
                     print("TO RUN BACKTEST:")
                     print("-" * 40)
                     print(f"  python -m src.backtesting.cli backtest --token {token_for_backtest} --days 30")
+                    print()
+                elif not token_ids_found:
+                    print("WARNING: Could not find valid Token IDs for this market.")
+                    print("Try opening the market in a browser and using browser DevTools")
+                    print("to find the token_id in Network requests to clob.polymarket.com")
                     print()
 
         except Exception as e:
