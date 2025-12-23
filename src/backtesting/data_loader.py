@@ -267,22 +267,62 @@ class HistoricalDataLoader:
 
         return None
 
-    async def search_markets(self, query: str, limit: int = 20) -> list[dict]:
+    async def search_markets(self, query: str, limit: int = 50) -> list[dict]:
         """Search markets by name/description."""
+        all_markets = []
+
+        # Try Gamma API with different parameters
         url = f"{GAMMA_API_URL}/markets"
-        params = {"limit": limit}
+
+        # Fetch active markets
+        params = {
+            "limit": 200,
+            "active": "true",
+            "closed": "false",
+        }
 
         data = await self._request(url, params)
-        if not data or not isinstance(data, list):
+        if data and isinstance(data, list):
+            all_markets.extend(data)
+
+        # Also try fetching with different sorting
+        params2 = {
+            "limit": 200,
+            "order": "volume",
+            "ascending": "false",
+        }
+        data2 = await self._request(url, params2)
+        if data2 and isinstance(data2, list):
+            # Add markets not already in list
+            existing_ids = {m.get("condition_id") or m.get("conditionId") for m in all_markets}
+            for m in data2:
+                mid = m.get("condition_id") or m.get("conditionId")
+                if mid and mid not in existing_ids:
+                    all_markets.append(m)
+
+        if not all_markets:
             return []
 
         # Filter by query
         query_lower = query.lower()
-        return [
-            m for m in data
+        matches = [
+            m for m in all_markets
             if query_lower in m.get("question", "").lower()
             or query_lower in m.get("description", "").lower()
+            or query_lower in m.get("title", "").lower()
         ]
+
+        # Sort by volume (most active first)
+        def get_volume(m):
+            vol = m.get("volume", 0)
+            try:
+                return float(vol) if vol else 0
+            except (ValueError, TypeError):
+                return 0
+
+        matches.sort(key=get_volume, reverse=True)
+
+        return matches[:limit]
 
     # ==================== Historical Price Data ====================
 
