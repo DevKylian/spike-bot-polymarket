@@ -515,41 +515,23 @@ class HistoricalDataLoader:
         end_date: datetime,
     ) -> list[PriceData]:
         """Fetch trade history from CLOB API."""
-        url = f"{CLOB_API_URL}/trades"
-
-        # CLOB uses pagination
         all_trades = []
-        cursor = None
-        max_iterations = 50  # Prevent infinite loops
 
-        for _ in range(max_iterations):
-            params = {
-                "asset_id": token_id,
-                "limit": 500,
-            }
-            if cursor:
-                params["cursor"] = cursor
+        # Try public trades endpoint
+        url = f"{CLOB_API_URL}/trades"
+        params = {"asset_id": token_id, "limit": 500}
 
-            data = await self._request(url, params)
-            if not data:
-                break
-
+        data = await self._request(url, params)
+        if data:
             trades = data if isinstance(data, list) else data.get("data", [])
-            if not trades:
-                break
-
             all_trades.extend(trades)
-
-            # Check pagination
-            cursor = data.get("next_cursor") if isinstance(data, dict) else None
-            if not cursor:
-                break
+            logger.info(f"Fetched {len(trades)} trades from public API")
 
         # Convert trades to price data
         prices = []
         for trade in all_trades:
             try:
-                ts = trade.get("created_at") or trade.get("timestamp") or trade.get("matchTime")
+                ts = trade.get("created_at") or trade.get("timestamp") or trade.get("matchTime") or trade.get("match_time")
                 if isinstance(ts, str):
                     timestamp = datetime.fromisoformat(ts.replace("Z", "+00:00"))
                 elif isinstance(ts, (int, float)):
@@ -570,7 +552,139 @@ class HistoricalDataLoader:
                 continue
 
         prices.sort(key=lambda x: x.timestamp)
+
+        if prices:
+            logger.info(f"Got {len(prices)} price points from trades")
+
         return prices
+
+    # ==================== Simulated Data Generation ====================
+
+    def generate_simulated_data(
+        self,
+        start_date: datetime,
+        end_date: datetime,
+        initial_price: float = 0.5,
+        volatility: float = 0.02,
+        spike_probability: float = 0.01,
+        spike_magnitude: float = 0.15,
+        mean_reversion_speed: float = 0.1,
+        interval_minutes: int = 1,
+    ) -> list[PriceData]:
+        """
+        Generate simulated price data for backtesting.
+
+        This creates realistic price movements with:
+        - Random walk with mean reversion
+        - Occasional price spikes (for spike strategy testing)
+        - Configurable volatility and spike characteristics
+
+        Args:
+            start_date: Start of simulation period
+            end_date: End of simulation period
+            initial_price: Starting price (0-1)
+            volatility: Standard deviation of price changes
+            spike_probability: Probability of spike per interval
+            spike_magnitude: Size of spike as fraction of price
+            mean_reversion_speed: How fast price reverts to mean
+            interval_minutes: Time between data points
+
+        Returns:
+            List of PriceData objects with simulated prices
+        """
+        import random
+
+        prices = []
+        current_price = initial_price
+        mean_price = initial_price
+
+        current_time = start_date
+
+        while current_time <= end_date:
+            # Normal random walk
+            noise = random.gauss(0, volatility)
+
+            # Mean reversion
+            reversion = mean_reversion_speed * (mean_price - current_price)
+
+            # Check for spike
+            spike = 0
+            if random.random() < spike_probability:
+                # Spike direction (up or down)
+                direction = 1 if random.random() > 0.5 else -1
+                spike = direction * spike_magnitude * current_price
+                logger.debug(f"Simulated spike at {current_time}: {spike:+.4f}")
+
+            # Update price
+            current_price = current_price + noise + reversion + spike
+
+            # Clamp to valid range (0.01 to 0.99)
+            current_price = max(0.01, min(0.99, current_price))
+
+            # Add some volume noise
+            volume = abs(random.gauss(1000, 500))
+
+            prices.append(PriceData(
+                timestamp=current_time,
+                price=current_price,
+                volume=volume,
+            ))
+
+            current_time += timedelta(minutes=interval_minutes)
+
+        logger.info(
+            "Generated simulated data",
+            data_points=len(prices),
+            start=start_date.isoformat(),
+            end=end_date.isoformat(),
+            spikes=int(len(prices) * spike_probability),
+        )
+
+        return prices
+
+    async def get_price_history_with_simulation(
+        self,
+        token_id: str,
+        start_date: datetime,
+        end_date: datetime,
+        interval: str = "1m",
+        use_simulation_if_no_data: bool = True,
+        initial_price: float | None = None,
+    ) -> tuple[list[PriceData], bool]:
+        """
+        Get price history, falling back to simulation if no real data available.
+
+        Returns:
+            Tuple of (prices, is_simulated)
+        """
+        # Try to get real data first
+        prices = await self.get_price_history(token_id, start_date, end_date, interval)
+
+        if len(prices) >= 100:
+            return prices, False
+
+        if not use_simulation_if_no_data:
+            return prices, False
+
+        logger.warning(
+            f"Insufficient real data ({len(prices)} points), using simulation"
+        )
+
+        # If we have current price from order book, use it as initial
+        if prices and not initial_price:
+            initial_price = prices[-1].price
+        elif not initial_price:
+            initial_price = 0.5
+
+        # Generate simulated data
+        simulated = self.generate_simulated_data(
+            start_date=start_date,
+            end_date=end_date,
+            initial_price=initial_price,
+            interval_minutes=1 if interval == "1m" else 5,
+        )
+
+        return simulated, True
 
     async def get_ohlcv(
         self,

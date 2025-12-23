@@ -55,6 +55,21 @@ class PriceWindow:
                 return price
         return None
 
+    def get_price_n_points_ago(self, n: int = 1) -> float | None:
+        """Get the price N data points ago (for minute-level backtesting)."""
+        if len(self.prices) <= n:
+            return None
+        return self.prices[-(n + 1)][1]
+
+    def get_data_interval_seconds(self) -> float | None:
+        """Estimate the interval between data points."""
+        if len(self.prices) < 2:
+            return None
+        # Use the last two points to estimate interval
+        ts1, _ = self.prices[-2]
+        ts2, _ = self.prices[-1]
+        return (ts2 - ts1).total_seconds()
+
     def clear(self) -> None:
         """Clear the window."""
         self.prices.clear()
@@ -232,11 +247,21 @@ class BacktestEngine:
         if not window or len(window.prices) < 2:
             return None
 
-        # Get price at start of window
-        reference_price = window.get_oldest_in_window(
-            timestamp,
-            self.config.spike_window_seconds,
-        )
+        # Check data interval to determine comparison method
+        data_interval = window.get_data_interval_seconds()
+
+        if data_interval is not None and data_interval > self.config.spike_window_seconds:
+            # Data is at lower frequency (e.g., minute bars)
+            # Use point-based comparison: compare to previous N data points
+            # spike_window_seconds becomes "number of bars to look back"
+            lookback_points = max(1, int(self.config.spike_window_seconds))
+            reference_price = window.get_price_n_points_ago(lookback_points)
+        else:
+            # High-frequency data (tick level) - use time-based window
+            reference_price = window.get_oldest_in_window(
+                timestamp,
+                self.config.spike_window_seconds,
+            )
 
         if reference_price is None or reference_price <= 0:
             return None

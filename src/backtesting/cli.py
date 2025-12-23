@@ -75,24 +75,69 @@ async def cmd_backtest(args):
     print(f"Period:        {start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}")
     print(f"Capital:       ${args.capital:,.2f}")
     print(f"Position Size: ${args.position_size:,.2f}")
+    if args.simulate:
+        print(f"Mode:          SIMULATION (generated data)")
     print()
 
     # Load data
     print("Loading historical data...")
     async with HistoricalDataLoader(use_cache=not args.no_cache) as loader:
-        market_data = await loader.load_market_data(
-            args.token,
-            start_date,
-            end_date,
-            resolution="1m",
+        is_simulated = False
+
+        if args.simulate:
+            # Generate simulated data directly
+            print("  Generating simulated price data...")
+            prices = loader.generate_simulated_data(
+                start_date=start_date,
+                end_date=end_date,
+                initial_price=args.initial_price or 0.5,
+                volatility=0.02,
+                spike_probability=0.01,
+                spike_magnitude=0.15,
+                interval_minutes=1,
+            )
+            is_simulated = True
+        else:
+            # Try to get real data, with simulation fallback
+            prices, is_simulated = await loader.get_price_history_with_simulation(
+                args.token,
+                start_date,
+                end_date,
+                interval="1m",
+                use_simulation_if_no_data=True,
+                initial_price=args.initial_price,
+            )
+
+        if not prices:
+            print("ERROR: No price data available and simulation disabled.")
+            return 1
+
+        # Create MarketData object
+        from src.backtesting.models import MarketData
+        market_data = MarketData(
+            token_id=args.token,
+            market_name="Simulated Market" if is_simulated else "",
+            condition_id=args.token,
+            start_date=start_date,
+            end_date=end_date,
+            prices=prices,
+            ohlcv=[],
+            total_volume=sum(p.volume for p in prices),
+            avg_daily_volume=sum(p.volume for p in prices) / max(args.days, 1),
+            avg_spread=0.01,
+            liquidity_score=50 if is_simulated else 0,
         )
 
-        if not market_data.prices:
-            print("ERROR: No price data available for this token.")
-            return 1
+        # If not simulated, try to get market name
+        if not is_simulated:
+            real_data = await loader.load_market_data(args.token, start_date, end_date)
+            if real_data.market_name:
+                market_data.market_name = real_data.market_name
 
         print(f"  Data points: {len(market_data.prices)}")
         print(f"  Market:      {market_data.market_name[:50] or 'Unknown'}...")
+        if is_simulated:
+            print(f"  *** SIMULATED DATA - Results are for testing only ***")
         print()
 
         # Run backtest
@@ -651,6 +696,10 @@ Examples:
     bt_parser.add_argument("--stop-loss", type=float, default=5.0, help="Stop loss (%)")
     bt_parser.add_argument("--output", "-o", help="Output file for results (JSON)")
     bt_parser.add_argument("--no-cache", action="store_true", help="Don't use cached data")
+    bt_parser.add_argument("--simulate", "-S", action="store_true",
+                          help="Use simulated data (for testing when no historical data available)")
+    bt_parser.add_argument("--initial-price", type=float, default=None,
+                          help="Initial price for simulation (0.0-1.0, default: 0.5 or current price)")
 
     # Optimize command
     opt_parser = subparsers.add_parser("optimize", help="Optimize parameters")
