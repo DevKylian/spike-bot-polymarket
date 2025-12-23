@@ -594,6 +594,9 @@ def create_app(dashboard: "WebDashboard | None" = None) -> FastAPI:
 
                 # Create backtest config
                 config = BacktestConfig(
+                    start_date=start_date,
+                    end_date=end_date,
+                    token_ids=[token_id],
                     initial_capital=capital,
                     position_size_usdc=100.0,
                     spike_threshold_percent=threshold,
@@ -601,7 +604,7 @@ def create_app(dashboard: "WebDashboard | None" = None) -> FastAPI:
                     take_profit_percent=take_profit,
                     stop_loss_percent=stop_loss,
                     max_positions=3,
-                    trading_fee_percent=0.1,
+                    fee_percent=0.1,
                 )
 
                 # Run backtest
