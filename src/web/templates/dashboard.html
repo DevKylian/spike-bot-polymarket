@@ -1480,14 +1480,18 @@
         }
 
         function renderTokenSelector(tokens) {
+            // Reset selected token when rendering new tokens
+            state.selectedTokenId = null;
+
             if (!tokens || tokens.length === 0) {
                 elements.tokenSelector.innerHTML = '<p style="color: var(--text-muted); font-size: 0.8rem;">No tokens available</p>';
+                updateTradingStatus();
                 return;
             }
 
             // Check if any token has a valid ID
-            const hasValidTokens = tokens.some(t => t.token_id && t.token_id.length > 10);
-            if (!hasValidTokens) {
+            const validTokens = tokens.filter(t => t.token_id && t.token_id.length > 10);
+            if (validTokens.length === 0) {
                 addLog('Warning: No valid token IDs found for this market', 'warn');
             }
 
@@ -1508,6 +1512,15 @@
                     </div>
                 `;
             }).join('');
+
+            // Auto-select first valid token
+            if (validTokens.length > 0) {
+                const firstValidBtn = document.querySelector('.token-btn:not(.invalid)');
+                if (firstValidBtn) {
+                    selectToken(firstValidBtn);
+                    addLog('Auto-selected YES token. Click NO to switch.', 'info');
+                }
+            }
         }
 
         function selectToken(element) {
