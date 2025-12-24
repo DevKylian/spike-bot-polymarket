@@ -2,29 +2,79 @@
 Proxy Manager Module - Polymarket Spike Bot
 
 Handles proxy configuration and free proxy fetching for geo-blocked regions.
+Supports HTTP, HTTPS, and SOCKS5 proxies.
 """
 
 import asyncio
 import random
+import time
 from dataclasses import dataclass
 
 import aiohttp
 import structlog
 
+try:
+    from aiohttp_socks import ProxyConnector
+    SOCKS_AVAILABLE = True
+except ImportError:
+    SOCKS_AVAILABLE = False
+
 logger = structlog.get_logger(__name__)
 
-# Free proxy sources (US proxies)
+# Free proxy sources (US and worldwide proxies)
 FREE_PROXY_SOURCES = [
-    "https://api.proxyscrape.com/v2/?request=displayproxies&protocol=http&timeout=5000&country=US&ssl=yes&anonymity=elite",
-    "https://raw.githubusercontent.com/TheSpeedX/SOCKS-List/master/http.txt",
+    # ProxyScrape - most reliable
+    "https://api.proxyscrape.com/v2/?request=displayproxies&protocol=http&timeout=10000&country=US&ssl=all&anonymity=all",
+    "https://api.proxyscrape.com/v2/?request=displayproxies&protocol=http&timeout=10000&country=all",
+    "https://api.proxyscrape.com/v2/?request=displayproxies&protocol=socks5&timeout=10000&country=all",
+    # Free Proxy List
+    "https://www.proxy-list.download/api/v1/get?type=http&country=US",
+    "https://www.proxy-list.download/api/v1/get?type=https&country=US",
+    "https://www.proxy-list.download/api/v1/get?type=http",
+    "https://www.proxy-list.download/api/v1/get?type=socks5",
+    # Geonode
+    "https://proxylist.geonode.com/api/proxy-list?limit=100&page=1&sort_by=lastChecked&sort_type=desc&protocols=http%2Chttps%2Csocks5",
+    # GitHub lists - very reliable sources
+    "https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/http.txt",
+    "https://raw.githubusercontent.com/TheSpeedX/SOCKS-List/master/socks5.txt",
     "https://raw.githubusercontent.com/ShiftyTR/Proxy-List/master/https.txt",
+    "https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/http.txt",
+    "https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/socks5.txt",
+    "https://raw.githubusercontent.com/hookzof/socks5_list/master/proxy.txt",
+    "https://raw.githubusercontent.com/clarketm/proxy-list/master/proxy-list-raw.txt",
+    "https://raw.githubusercontent.com/sunny9577/proxy-scraper/master/proxies.txt",
+    "https://raw.githubusercontent.com/roosterkid/openproxylist/main/HTTPS_RAW.txt",
+    "https://raw.githubusercontent.com/mertguvencli/http-proxy-list/main/proxy-list/data.txt",
+    "https://raw.githubusercontent.com/jetkai/proxy-list/main/online-proxies/txt/proxies-http.txt",
+    "https://raw.githubusercontent.com/jetkai/proxy-list/main/online-proxies/txt/proxies-https.txt",
+    "https://raw.githubusercontent.com/jetkai/proxy-list/main/online-proxies/txt/proxies-socks5.txt",
+    "https://raw.githubusercontent.com/prxchk/proxy-list/main/http.txt",
+    "https://raw.githubusercontent.com/prxchk/proxy-list/main/socks5.txt",
+    # Spys.me
+    "https://spys.me/proxy.txt",
+    "https://spys.me/socks.txt",
+    # Other sources
+    "https://openproxy.space/list/http",
+    "https://openproxy.space/list/socks5",
 ]
 
-# Backup proxies (may not always work)
+# Backup proxies (tested working proxies - update regularly)
 BACKUP_PROXIES = [
     "http://38.154.227.167:5868",
     "http://185.199.229.156:7492",
     "http://185.199.228.220:7300",
+    "http://104.223.135.178:10000",
+    "http://204.44.69.89:10001",
+    "http://173.211.0.148:6641",
+    "http://206.41.172.74:3128",
+    "http://47.251.70.179:80",
+    "http://20.206.106.192:8123",
+    "http://50.217.226.41:80",
+    "http://50.200.12.66:80",
+    "http://50.218.57.70:80",
+    "http://50.174.7.152:80",
+    "http://50.168.72.113:80",
+    "http://50.207.199.80:80",
 ]
 
 
@@ -71,19 +121,32 @@ class ProxyManager:
         # Fetch new proxies
         await self._fetch_proxies()
 
-        # Find a working proxy
-        for proxy in self._proxies:
-            if await self._test_proxy(proxy.url):
-                self._current_proxy = proxy.url
-                logger.info("Found working proxy", proxy=proxy.url[:30] + "...")
-                return proxy.url
+        # Test proxies in parallel (faster)
+        logger.info(f"Testing {len(self._proxies)} proxies in parallel...")
 
-        # Try backup proxies
-        for proxy_url in BACKUP_PROXIES:
-            if await self._test_proxy(proxy_url):
-                self._current_proxy = proxy_url
-                logger.info("Using backup proxy", proxy=proxy_url[:30] + "...")
-                return proxy_url
+        # Test in batches of 20
+        batch_size = 20
+        for i in range(0, len(self._proxies), batch_size):
+            batch = self._proxies[i:i + batch_size]
+            tasks = [self._test_proxy(p.url) for p in batch]
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+
+            for j, result in enumerate(results):
+                if result is True:
+                    self._current_proxy = batch[j].url
+                    logger.info("Found working proxy", proxy=self._current_proxy[:30] + "...")
+                    return self._current_proxy
+
+        # Try backup proxies in parallel
+        logger.info("Testing backup proxies...")
+        tasks = [self._test_proxy(p) for p in BACKUP_PROXIES]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        for i, result in enumerate(results):
+            if result is True:
+                self._current_proxy = BACKUP_PROXIES[i]
+                logger.info("Using backup proxy", proxy=self._current_proxy[:30] + "...")
+                return self._current_proxy
 
         logger.error("No working proxy found")
         return None
@@ -147,19 +210,32 @@ class ProxyManager:
 
         return proxies
 
-    async def _test_proxy(self, proxy_url: str, timeout: float = 5.0) -> bool:
+    async def _test_proxy(self, proxy_url: str, timeout: float = 8.0) -> bool:
         """Test if a proxy is working by making a request to Polymarket."""
         try:
-            async with aiohttp.ClientSession(
-                timeout=aiohttp.ClientTimeout(total=timeout)
-            ) as session:
-                # Test with Polymarket API
-                async with session.get(
-                    "https://clob.polymarket.com/time",
-                    proxy=proxy_url,
-                ) as response:
-                    if response.status == 200:
-                        return True
+            # Handle SOCKS5 proxies
+            if proxy_url.startswith("socks5://") or proxy_url.startswith("socks4://"):
+                if not SOCKS_AVAILABLE:
+                    return False
+                connector = ProxyConnector.from_url(proxy_url)
+                async with aiohttp.ClientSession(
+                    connector=connector,
+                    timeout=aiohttp.ClientTimeout(total=timeout)
+                ) as session:
+                    async with session.get("https://clob.polymarket.com/time") as response:
+                        if response.status == 200:
+                            return True
+            else:
+                # HTTP/HTTPS proxy
+                async with aiohttp.ClientSession(
+                    timeout=aiohttp.ClientTimeout(total=timeout)
+                ) as session:
+                    async with session.get(
+                        "https://clob.polymarket.com/time",
+                        proxy=proxy_url,
+                    ) as response:
+                        if response.status == 200:
+                            return True
         except Exception:
             pass
 
