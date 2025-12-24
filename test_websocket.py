@@ -63,8 +63,22 @@ def print_event(data: dict, count: int):
         bids = data.get("bids", [])
         asks = data.get("asks", [])
 
-        best_bid = float(bids[0][0]) if bids else 0
-        best_ask = float(asks[0][0]) if asks else 0
+        # Handle both list and dict formats
+        best_bid = 0
+        best_ask = 0
+
+        if bids:
+            if isinstance(bids[0], (list, tuple)):
+                best_bid = float(bids[0][0])
+            elif isinstance(bids[0], dict):
+                best_bid = float(bids[0].get("price", 0))
+
+        if asks:
+            if isinstance(asks[0], (list, tuple)):
+                best_ask = float(asks[0][0])
+            elif isinstance(asks[0], dict):
+                best_ask = float(asks[0].get("price", 0))
+
         mid = (best_bid + best_ask) / 2 if best_bid and best_ask else 0
 
         print(f"[{count}] 📊 BOOK | Bid: {best_bid:.4f} | Ask: {best_ask:.4f} | Mid: {mid:.4f}")
