@@ -35,6 +35,12 @@ def parse_args():
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
+        "market_url",
+        nargs="?",
+        type=str,
+        help="Polymarket market URL (e.g., https://polymarket.com/event/sol-updown-15m-...)"
+    )
+    parser.add_argument(
         "--token-id", "-t",
         type=str,
         help="Token ID to trade (overrides TRADING_TARGET_MARKETS env var)"
@@ -460,13 +466,68 @@ def setup_signal_handlers() -> asyncio.Event:
     return _shutdown_event
 
 
+async def fetch_token_from_url(url: str) -> str | None:
+    """Fetch token ID from a Polymarket market URL."""
+    import aiohttp
+    import re
+
+    # Extract slug from URL
+    # Format: https://polymarket.com/event/sol-updown-15m-1766620800
+    match = re.search(r'/event/([^/?]+)', url)
+    if not match:
+        print(f"Could not extract event slug from URL: {url}")
+        return None
+
+    slug = match.group(1)
+    print(f"Fetching market info for: {slug}")
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            # Try Gamma API
+            async with session.get(
+                f"https://gamma-api.polymarket.com/events?slug={slug}",
+                timeout=aiohttp.ClientTimeout(total=10)
+            ) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    if data and len(data) > 0:
+                        event = data[0]
+                        markets = event.get("markets", [])
+                        if markets:
+                            # Get the first market's token
+                            market = markets[0]
+                            tokens = market.get("clobTokenIds", [])
+                            if tokens:
+                                token_id = tokens[0]
+                                print(f"Found token ID: {token_id[:30]}...")
+                                return token_id
+                            # Try alternative field names
+                            token_id = market.get("token_id") or market.get("tokenId")
+                            if token_id:
+                                print(f"Found token ID: {token_id[:30]}...")
+                                return token_id
+    except Exception as e:
+        print(f"Error fetching market info: {e}")
+
+    print("Could not find token ID for this market URL")
+    return None
+
+
 async def main(args=None) -> None:
     """Main entry point."""
     global _bot_instance
 
     # Apply command line arguments to environment before loading config
     if args:
-        if args.token_id:
+        # Handle URL argument - fetch token ID from Polymarket
+        if args.market_url and args.market_url.startswith("http"):
+            token_id = await fetch_token_from_url(args.market_url)
+            if token_id:
+                os.environ["TRADING_TARGET_MARKETS"] = token_id
+            else:
+                print("Failed to get token ID from URL. Please provide --token-id directly.")
+                sys.exit(1)
+        elif args.token_id:
             os.environ["TRADING_TARGET_MARKETS"] = args.token_id
         if args.paper:
             os.environ["TRADING_PAPER_TRADING"] = "true"
