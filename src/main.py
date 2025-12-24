@@ -178,6 +178,23 @@ class SpikeBot:
                 self.dashboard.on_start_trading(self._on_start_trading_from_dashboard)
                 self.dashboard.on_stop_trading(self._on_stop_trading_from_dashboard)
                 self.dashboard.on_config_change(self._on_config_change_from_dashboard)
+
+                # Auto-set dashboard to trading mode with the first token
+                if target_markets:
+                    first_token = target_markets[0]
+                    self.dashboard.current_token_id = first_token
+                    self.dashboard.is_trading = True
+                    self.dashboard.bot_status = "running"
+                    self.dashboard.current_market = {
+                        "token_id": first_token,
+                        "question": f"Trading on token {first_token[:20]}...",
+                        "status": "active",
+                    }
+                    structlog.get_logger().info(
+                        "Dashboard auto-configured",
+                        token_id=first_token[:30] + "...",
+                    )
+
                 self.dashboard.start()
 
             # Start background tasks
