@@ -157,6 +157,10 @@ class MarketConnector:
         self.account = Account.from_key(private_key)
         self.address = self.account.address
 
+        # Proxy configuration
+        self._proxy_url: str | None = config.connection.proxy_url
+        self._use_free_proxy: bool = config.connection.use_free_proxy
+
         # HTTP session
         self._session: aiohttp.ClientSession | None = None
 
@@ -177,6 +181,8 @@ class MarketConnector:
             "MarketConnector initialized",
             address=self.address,
             api_url=self.conn_config.clob_api_url,
+            proxy=self._proxy_url[:30] + "..." if self._proxy_url else "none",
+            use_free_proxy=self._use_free_proxy,
         )
 
     async def __aenter__(self) -> "MarketConnector":
@@ -189,11 +195,20 @@ class MarketConnector:
         await self.disconnect()
 
     async def connect(self) -> None:
-        """Initialize HTTP session."""
+        """Initialize HTTP session with optional proxy support."""
         if self._session is None:
+            # Fetch free proxy if configured
+            if self._use_free_proxy and not self._proxy_url:
+                from .proxy_manager import get_working_proxy
+                self._proxy_url = await get_working_proxy()
+                if self._proxy_url:
+                    logger.info("Using free proxy", proxy=self._proxy_url[:30] + "...")
+                else:
+                    logger.warning("No free proxy available, connecting directly")
+
             timeout = aiohttp.ClientTimeout(total=self.conn_config.http_timeout_seconds)
             self._session = aiohttp.ClientSession(timeout=timeout)
-            logger.info("HTTP session created")
+            logger.info("HTTP session created", proxy=self._proxy_url[:30] + "..." if self._proxy_url else "none")
 
     async def disconnect(self) -> None:
         """Close all connections."""
@@ -267,6 +282,7 @@ class MarketConnector:
                 url,
                 json=data,
                 headers=headers,
+                proxy=self._proxy_url,
             ) as response:
                 response_text = await response.text()
 
@@ -491,6 +507,7 @@ class MarketConnector:
             self._ws = await self._session.ws_connect(
                 self.conn_config.ws_url,
                 heartbeat=self.conn_config.ws_ping_interval_seconds,
+                proxy=self._proxy_url,
             )
             self._ws_connected = True
 
