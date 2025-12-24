@@ -9,7 +9,9 @@ Entry point that orchestrates all components:
 - Graceful shutdown handling
 """
 
+import argparse
 import asyncio
+import os
 import signal
 import sys
 from datetime import datetime, timezone
@@ -24,6 +26,41 @@ from .market_connector import MarketConnector, OrderBook
 from .risk_manager import RiskManager
 from .strategy_engine import MultiMarketStrategy, Signal
 from .web import WebDashboard
+
+
+def parse_args():
+    """Parse command line arguments."""
+    parser = argparse.ArgumentParser(
+        description="Polymarket Spike Bot - Mean reversion trading bot",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument(
+        "--token-id", "-t",
+        type=str,
+        help="Token ID to trade (overrides TRADING_TARGET_MARKETS env var)"
+    )
+    parser.add_argument(
+        "--web", "-w",
+        action="store_true",
+        help="Enable web dashboard"
+    )
+    parser.add_argument(
+        "--port", "-p",
+        type=int,
+        default=8080,
+        help="Web dashboard port (default: 8080)"
+    )
+    parser.add_argument(
+        "--paper",
+        action="store_true",
+        help="Force paper trading mode"
+    )
+    parser.add_argument(
+        "--live",
+        action="store_true",
+        help="Force live trading mode"
+    )
+    return parser.parse_args()
 
 
 # Global state for signal handling
@@ -406,9 +443,22 @@ def setup_signal_handlers() -> asyncio.Event:
     return _shutdown_event
 
 
-async def main() -> None:
+async def main(args=None) -> None:
     """Main entry point."""
     global _bot_instance
+
+    # Apply command line arguments to environment before loading config
+    if args:
+        if args.token_id:
+            os.environ["TRADING_TARGET_MARKETS"] = args.token_id
+        if args.paper:
+            os.environ["TRADING_PAPER_TRADING"] = "true"
+        if args.live:
+            os.environ["TRADING_PAPER_TRADING"] = "false"
+        if args.web:
+            os.environ["WEB_ENABLED"] = "true"
+        if args.port:
+            os.environ["WEB_PORT"] = str(args.port)
 
     # Load configuration
     config = get_config()
@@ -420,7 +470,7 @@ async def main() -> None:
     setup_signal_handlers()
 
     # Create and run bot
-    _bot_instance = SpikeBot(config)
+    _bot_instance = SpikeBot(config, enable_web=args.web if args else False, web_port=args.port if args else 8080)
 
     try:
         await _bot_instance.start()
@@ -437,8 +487,9 @@ def run() -> None:
 
     Can be called from command line or as a module.
     """
+    args = parse_args()
     try:
-        asyncio.run(main())
+        asyncio.run(main(args))
     except KeyboardInterrupt:
         print("\nBot stopped by user")
     except Exception as e:
