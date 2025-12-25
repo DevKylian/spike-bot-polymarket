@@ -275,59 +275,66 @@ class MarketConnector:
             # Chain ID: 137 for Polygon mainnet
             chain_id = self.conn_config.chain_id
 
-            # Check if we have API credentials
-            api_key = self.credentials.api_key.get_secret_value() if self.credentials.api_key else None
-            api_secret = self.credentials.api_secret.get_secret_value() if self.credentials.api_secret else None
-            api_passphrase = self.credentials.api_passphrase.get_secret_value() if self.credentials.api_passphrase else None
+            # Always initialize client first (without credentials)
+            self._clob_client = ClobClient(
+                host=self.conn_config.clob_api_url,
+                key=self._private_key,
+                chain_id=chain_id,
+            )
 
-            if api_key and api_secret and api_passphrase:
-                # Use existing API credentials
-                creds = ApiCreds(
-                    api_key=api_key,
-                    api_secret=api_secret,
-                    api_passphrase=api_passphrase,
-                )
-                self._clob_client = ClobClient(
-                    host=self.conn_config.clob_api_url,
-                    key=self._private_key,
-                    chain_id=chain_id,
-                    creds=creds,
-                )
-                logger.info("CLOB client initialized with API credentials")
-            else:
-                # Initialize without credentials - will need to derive/create them
-                self._clob_client = ClobClient(
-                    host=self.conn_config.clob_api_url,
-                    key=self._private_key,
-                    chain_id=chain_id,
+            # Try to derive API credentials from wallet (most reliable method)
+            creds_set = False
+            try:
+                logger.info("Deriving API credentials from wallet...")
+                derived_creds = self._clob_client.derive_api_key()
+                self._clob_client.set_api_creds(derived_creds)
+                logger.info("API credentials derived successfully")
+                creds_set = True
+            except Exception as e:
+                logger.warning(
+                    "Could not derive API credentials",
+                    error=str(e),
                 )
 
-                # Try to derive API credentials
+            # If derivation failed, try to create new credentials
+            if not creds_set:
                 try:
-                    logger.info("Deriving API credentials from wallet...")
-                    self._clob_client.set_api_creds(self._clob_client.derive_api_key())
-                    logger.info("API credentials derived successfully")
-                except Exception as e:
+                    logger.info("Attempting to create new API credentials...")
+                    new_creds = self._clob_client.create_api_key()
+                    self._clob_client.set_api_creds(new_creds)
+                    logger.info("New API credentials created successfully")
+                    creds_set = True
+                except Exception as e2:
                     logger.warning(
-                        "Could not derive API credentials. You may need to create them at https://clob.polymarket.com",
-                        error=str(e),
+                        "Could not create API credentials",
+                        error=str(e2),
                     )
-                    # Try to create new credentials
-                    try:
-                        logger.info("Attempting to create new API credentials...")
-                        self._clob_client.set_api_creds(self._clob_client.create_api_key())
-                        logger.info("New API credentials created successfully")
-                    except Exception as e2:
-                        logger.error(
-                            "Failed to create API credentials",
-                            error=str(e2),
-                        )
+
+            # If still no credentials, try using provided ones from .env
+            if not creds_set:
+                api_key = self.credentials.api_key.get_secret_value() if self.credentials.api_key else None
+                api_secret = self.credentials.api_secret.get_secret_value() if self.credentials.api_secret else None
+                api_passphrase = self.credentials.api_passphrase.get_secret_value() if self.credentials.api_passphrase else None
+
+                if api_key and api_secret and api_passphrase:
+                    logger.info("Using API credentials from environment variables...")
+                    creds = ApiCreds(
+                        api_key=api_key,
+                        api_secret=api_secret,
+                        api_passphrase=api_passphrase,
+                    )
+                    self._clob_client.set_api_creds(creds)
+                    creds_set = True
+                else:
+                    logger.error(
+                        "No API credentials available! Trading will fail. "
+                        "Please ensure your wallet has interacted with Polymarket at least once."
+                    )
 
             self._clob_initialized = True
 
             # Verify connection
             try:
-                # Test API connection
                 ok = self._clob_client.get_ok()
                 logger.info("CLOB API connection test", status="OK" if ok else "FAILED")
             except Exception as e:
