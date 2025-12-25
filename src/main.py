@@ -470,6 +470,7 @@ async def fetch_token_from_url(url: str) -> str | None:
     """Fetch token ID from a Polymarket market URL."""
     import aiohttp
     import re
+    import json as json_lib
 
     # Extract slug from URL
     # Format: https://polymarket.com/event/sol-updown-15m-1766620800
@@ -497,17 +498,28 @@ async def fetch_token_from_url(url: str) -> str | None:
                             # Get the first market's token
                             market = markets[0]
                             tokens = market.get("clobTokenIds", [])
-                            if tokens:
-                                token_id = tokens[0]
-                                print(f"Found token ID: {token_id[:30]}...")
+
+                            # clobTokenIds might be a JSON string, parse it
+                            if isinstance(tokens, str):
+                                try:
+                                    tokens = json_lib.loads(tokens)
+                                except json_lib.JSONDecodeError:
+                                    tokens = []
+
+                            if tokens and len(tokens) > 0:
+                                token_id = str(tokens[0])
+                                print(f"Found token ID: {token_id[:50]}...")
                                 return token_id
+
                             # Try alternative field names
-                            token_id = market.get("token_id") or market.get("tokenId")
+                            token_id = market.get("token_id") or market.get("tokenId") or market.get("conditionId")
                             if token_id:
-                                print(f"Found token ID: {token_id[:30]}...")
-                                return token_id
+                                print(f"Found token ID (alt): {str(token_id)[:50]}...")
+                                return str(token_id)
     except Exception as e:
         print(f"Error fetching market info: {e}")
+        import traceback
+        traceback.print_exc()
 
     print("Could not find token ID for this market URL")
     return None
