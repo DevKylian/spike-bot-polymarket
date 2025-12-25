@@ -291,6 +291,16 @@ class ConnectionConfig(BaseSettings):
         description="Delay before WebSocket reconnection attempt"
     )
 
+    # Proxy configuration (for geo-blocked regions)
+    proxy_url: str | None = Field(
+        default=None,
+        description="HTTP/SOCKS proxy URL (e.g., http://user:pass@host:port or socks5://host:port)"
+    )
+    use_free_proxy: bool = Field(
+        default=False,
+        description="Automatically fetch and use a free US proxy"
+    )
+
     # Chain ID (Polygon for Polymarket)
     chain_id: int = Field(
         default=137,

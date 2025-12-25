@@ -166,13 +166,61 @@ class WebDashboard:
             if not result:
                 return {"error": "Could not analyze market. Check the URL."}
 
+            # Normalize tokens to always have token_id field
+            normalized_tokens = []
+            raw_tokens = result.market_info.tokens or []
+
+            for i, token in enumerate(raw_tokens):
+                # Try multiple possible field names for token ID
+                token_id = (
+                    token.get("token_id", "") or
+                    token.get("tokenId", "") or
+                    token.get("id", "") or
+                    ""
+                )
+                outcome = token.get("outcome", "YES" if i == 0 else "NO")
+                price = float(token.get("price", 0) or 0)
+
+                normalized_tokens.append({
+                    "token_id": token_id,
+                    "outcome": outcome,
+                    "price": price,
+                })
+
+            # If no token IDs found, try clobTokenIds from raw market data
+            if not any(t["token_id"] for t in normalized_tokens):
+                raw_market = result.market_info.raw_market or {}
+                clob_token_ids = raw_market.get("clobTokenIds", [])
+
+                # Parse if it's a JSON string
+                if isinstance(clob_token_ids, str):
+                    try:
+                        clob_token_ids = json.loads(clob_token_ids)
+                    except (json.JSONDecodeError, TypeError):
+                        clob_token_ids = []
+
+                if clob_token_ids and isinstance(clob_token_ids, list):
+                    # Use clobTokenIds to populate token_id
+                    for i, tid in enumerate(clob_token_ids):
+                        if isinstance(tid, str) and len(tid) > 10:
+                            if i < len(normalized_tokens):
+                                normalized_tokens[i]["token_id"] = tid
+                            else:
+                                outcome = "YES" if i == 0 else "NO" if i == 1 else f"Option {i}"
+                                price = result.market_info.yes_price if i == 0 else result.market_info.no_price
+                                normalized_tokens.append({
+                                    "token_id": tid,
+                                    "outcome": outcome,
+                                    "price": price,
+                                })
+
             # Store as current market
             self.current_market = {
                 "question": result.market_info.question,
                 "category": result.market_info.category,
                 "status": result.market_info.status.value,
                 "condition_id": result.market_info.condition_id,
-                "tokens": result.market_info.tokens,
+                "tokens": normalized_tokens,
                 "yes_price": result.market_info.yes_price,
                 "no_price": result.market_info.no_price,
                 "volume": result.market_info.volume,
@@ -473,6 +521,119 @@ def create_app(dashboard: "WebDashboard | None" = None) -> FastAPI:
         if dashboard:
             return await dashboard.stop_trading_on_token()
         return {"error": "Dashboard not initialized"}
+
+    @app.post("/api/backtest")
+    async def run_backtest(request: Request):
+        """Run a backtest with given parameters."""
+        try:
+            params = await request.json()
+
+            token_id = params.get("token", "")
+            days = params.get("days", 30)
+            threshold = params.get("threshold", 3.0)
+            window = params.get("window", 2.0)
+            take_profit = params.get("take_profit", 2.0)
+            stop_loss = params.get("stop_loss", 5.0)
+            capital = params.get("capital", 10000)
+            simulate = params.get("simulate", False)
+
+            if not token_id:
+                return {"error": "Token ID is required"}
+
+            # Import backtesting modules
+            from datetime import timedelta
+            from src.backtesting.data_loader import HistoricalDataLoader
+            from src.backtesting.engine import BacktestEngine, BacktestConfig
+            from src.backtesting.models import MarketData
+
+            end_date = datetime.now(timezone.utc)
+            start_date = end_date - timedelta(days=days)
+
+            async with HistoricalDataLoader(use_cache=True) as loader:
+                is_simulated = False
+
+                if simulate:
+                    # Generate simulated data
+                    prices = loader.generate_simulated_data(
+                        start_date=start_date,
+                        end_date=end_date,
+                        initial_price=0.5,
+                        volatility=0.02,
+                        spike_probability=0.01,
+                        spike_magnitude=0.15,
+                        interval_minutes=1,
+                    )
+                    is_simulated = True
+                else:
+                    # Try to get real data with simulation fallback
+                    prices, is_simulated = await loader.get_price_history_with_simulation(
+                        token_id,
+                        start_date,
+                        end_date,
+                        interval="1m",
+                        use_simulation_if_no_data=True,
+                    )
+
+                if not prices:
+                    return {"error": "No price data available"}
+
+                # Create market data
+                market_data = MarketData(
+                    token_id=token_id,
+                    market_name="Simulated Market" if is_simulated else "Market",
+                    condition_id=token_id,
+                    start_date=start_date,
+                    end_date=end_date,
+                    prices=prices,
+                    ohlcv=[],
+                    total_volume=sum(p.volume for p in prices),
+                    avg_daily_volume=sum(p.volume for p in prices) / max(days, 1),
+                    avg_spread=0.01,
+                    liquidity_score=50 if is_simulated else 0,
+                )
+
+                # Create backtest config
+                config = BacktestConfig(
+                    start_date=start_date,
+                    end_date=end_date,
+                    token_ids=[token_id],
+                    initial_capital=capital,
+                    position_size_usdc=100.0,
+                    spike_threshold_percent=threshold,
+                    spike_window_seconds=window,
+                    take_profit_percent=take_profit,
+                    stop_loss_percent=stop_loss,
+                    max_positions=3,
+                    fee_percent=0.1,
+                )
+
+                # Run backtest
+                engine = BacktestEngine(config)
+                result = engine.run({token_id: market_data})
+
+                # Build equity curve
+                equity_curve = [capital]
+                current = capital
+                for trade in result.trades:
+                    current += trade.pnl
+                    equity_curve.append(current)
+
+                return {
+                    "total_return": result.metrics.get("total_return_percent", 0),
+                    "total_trades": result.metrics.get("total_trades", 0),
+                    "win_rate": result.metrics.get("win_rate_percent", 0),
+                    "sharpe_ratio": result.metrics.get("sharpe_ratio", 0),
+                    "total_pnl": result.metrics.get("total_pnl", 0),
+                    "max_drawdown": result.metrics.get("max_drawdown_percent", 0),
+                    "avg_win": result.metrics.get("avg_win", 0),
+                    "avg_loss": result.metrics.get("avg_loss", 0),
+                    "equity_curve": equity_curve,
+                    "is_simulated": is_simulated,
+                }
+
+        except Exception as e:
+            logger.error("Backtest error", error=str(e))
+            return {"error": str(e)}
 
     @app.websocket("/ws")
     async def websocket_endpoint(websocket: WebSocket):

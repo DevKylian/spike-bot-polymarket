@@ -9,7 +9,9 @@ Entry point that orchestrates all components:
 - Graceful shutdown handling
 """
 
+import argparse
 import asyncio
+import os
 import signal
 import sys
 from datetime import datetime, timezone
@@ -24,6 +26,47 @@ from .market_connector import MarketConnector, OrderBook
 from .risk_manager import RiskManager
 from .strategy_engine import MultiMarketStrategy, Signal
 from .web import WebDashboard
+
+
+def parse_args():
+    """Parse command line arguments."""
+    parser = argparse.ArgumentParser(
+        description="Polymarket Spike Bot - Mean reversion trading bot",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument(
+        "market_url",
+        nargs="?",
+        type=str,
+        help="Polymarket market URL (e.g., https://polymarket.com/event/sol-updown-15m-...)"
+    )
+    parser.add_argument(
+        "--token-id", "-t",
+        type=str,
+        help="Token ID to trade (overrides TRADING_TARGET_MARKETS env var)"
+    )
+    parser.add_argument(
+        "--web", "-w",
+        action="store_true",
+        help="Enable web dashboard"
+    )
+    parser.add_argument(
+        "--port", "-p",
+        type=int,
+        default=8080,
+        help="Web dashboard port (default: 8080)"
+    )
+    parser.add_argument(
+        "--paper",
+        action="store_true",
+        help="Force paper trading mode"
+    )
+    parser.add_argument(
+        "--live",
+        action="store_true",
+        help="Force live trading mode"
+    )
+    return parser.parse_args()
 
 
 # Global state for signal handling
@@ -141,6 +184,23 @@ class SpikeBot:
                 self.dashboard.on_start_trading(self._on_start_trading_from_dashboard)
                 self.dashboard.on_stop_trading(self._on_stop_trading_from_dashboard)
                 self.dashboard.on_config_change(self._on_config_change_from_dashboard)
+
+                # Auto-set dashboard to trading mode with the first token
+                if target_markets:
+                    first_token = target_markets[0]
+                    self.dashboard.current_token_id = first_token
+                    self.dashboard.is_trading = True
+                    self.dashboard.bot_status = "running"
+                    self.dashboard.current_market = {
+                        "token_id": first_token,
+                        "question": f"Trading on token {first_token[:20]}...",
+                        "status": "active",
+                    }
+                    structlog.get_logger().info(
+                        "Dashboard auto-configured",
+                        token_id=first_token[:30] + "...",
+                    )
+
                 self.dashboard.start()
 
             # Start background tasks
@@ -406,9 +466,89 @@ def setup_signal_handlers() -> asyncio.Event:
     return _shutdown_event
 
 
-async def main() -> None:
+async def fetch_token_from_url(url: str) -> str | None:
+    """Fetch token ID from a Polymarket market URL."""
+    import aiohttp
+    import re
+    import json as json_lib
+
+    # Extract slug from URL
+    # Format: https://polymarket.com/event/sol-updown-15m-1766620800
+    match = re.search(r'/event/([^/?]+)', url)
+    if not match:
+        print(f"Could not extract event slug from URL: {url}")
+        return None
+
+    slug = match.group(1)
+    print(f"Fetching market info for: {slug}")
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            # Try Gamma API
+            async with session.get(
+                f"https://gamma-api.polymarket.com/events?slug={slug}",
+                timeout=aiohttp.ClientTimeout(total=10)
+            ) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    if data and len(data) > 0:
+                        event = data[0]
+                        markets = event.get("markets", [])
+                        if markets:
+                            # Get the first market's token
+                            market = markets[0]
+                            tokens = market.get("clobTokenIds", [])
+
+                            # clobTokenIds might be a JSON string, parse it
+                            if isinstance(tokens, str):
+                                try:
+                                    tokens = json_lib.loads(tokens)
+                                except json_lib.JSONDecodeError:
+                                    tokens = []
+
+                            if tokens and len(tokens) > 0:
+                                token_id = str(tokens[0])
+                                print(f"Found token ID: {token_id[:50]}...")
+                                return token_id
+
+                            # Try alternative field names
+                            token_id = market.get("token_id") or market.get("tokenId") or market.get("conditionId")
+                            if token_id:
+                                print(f"Found token ID (alt): {str(token_id)[:50]}...")
+                                return str(token_id)
+    except Exception as e:
+        print(f"Error fetching market info: {e}")
+        import traceback
+        traceback.print_exc()
+
+    print("Could not find token ID for this market URL")
+    return None
+
+
+async def main(args=None) -> None:
     """Main entry point."""
     global _bot_instance
+
+    # Apply command line arguments to environment before loading config
+    if args:
+        # Handle URL argument - fetch token ID from Polymarket
+        if args.market_url and args.market_url.startswith("http"):
+            token_id = await fetch_token_from_url(args.market_url)
+            if token_id:
+                os.environ["TRADING_TARGET_MARKETS"] = token_id
+            else:
+                print("Failed to get token ID from URL. Please provide --token-id directly.")
+                sys.exit(1)
+        elif args.token_id:
+            os.environ["TRADING_TARGET_MARKETS"] = args.token_id
+        if args.paper:
+            os.environ["TRADING_PAPER_TRADING"] = "true"
+        if args.live:
+            os.environ["TRADING_PAPER_TRADING"] = "false"
+        if args.web:
+            os.environ["WEB_ENABLED"] = "true"
+        if args.port:
+            os.environ["WEB_PORT"] = str(args.port)
 
     # Load configuration
     config = get_config()
@@ -420,7 +560,7 @@ async def main() -> None:
     setup_signal_handlers()
 
     # Create and run bot
-    _bot_instance = SpikeBot(config)
+    _bot_instance = SpikeBot(config, enable_web=args.web if args else False, web_port=args.port if args else 8080)
 
     try:
         await _bot_instance.start()
@@ -437,8 +577,9 @@ def run() -> None:
 
     Can be called from command line or as a module.
     """
+    args = parse_args()
     try:
-        asyncio.run(main())
+        asyncio.run(main(args))
     except KeyboardInterrupt:
         print("\nBot stopped by user")
     except Exception as e:

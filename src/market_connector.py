@@ -18,6 +18,12 @@ from typing import Any, Callable, Coroutine
 import aiohttp
 import structlog
 from eth_account import Account
+
+try:
+    from aiohttp_socks import ProxyConnector
+    SOCKS_AVAILABLE = True
+except ImportError:
+    SOCKS_AVAILABLE = False
 from eth_account.messages import encode_defunct
 from tenacity import (
     retry,
@@ -157,6 +163,10 @@ class MarketConnector:
         self.account = Account.from_key(private_key)
         self.address = self.account.address
 
+        # Proxy configuration
+        self._proxy_url: str | None = config.connection.proxy_url
+        self._use_free_proxy: bool = config.connection.use_free_proxy
+
         # HTTP session
         self._session: aiohttp.ClientSession | None = None
 
@@ -177,6 +187,8 @@ class MarketConnector:
             "MarketConnector initialized",
             address=self.address,
             api_url=self.conn_config.clob_api_url,
+            proxy=self._proxy_url[:30] + "..." if self._proxy_url else "none",
+            use_free_proxy=self._use_free_proxy,
         )
 
     async def __aenter__(self) -> "MarketConnector":
@@ -189,11 +201,35 @@ class MarketConnector:
         await self.disconnect()
 
     async def connect(self) -> None:
-        """Initialize HTTP session."""
+        """Initialize HTTP session with optional proxy support."""
         if self._session is None:
+            # Fetch free proxy if configured
+            if self._use_free_proxy and not self._proxy_url:
+                from .proxy_manager import get_working_proxy
+                self._proxy_url = await get_working_proxy()
+                if self._proxy_url:
+                    logger.info("Using free proxy", proxy=self._proxy_url[:30] + "...")
+                else:
+                    logger.warning("No free proxy available, connecting directly")
+
             timeout = aiohttp.ClientTimeout(total=self.conn_config.http_timeout_seconds)
-            self._session = aiohttp.ClientSession(timeout=timeout)
-            logger.info("HTTP session created")
+
+            # Use ProxyConnector for SOCKS proxies
+            connector = None
+            if self._proxy_url and (self._proxy_url.startswith("socks5://") or self._proxy_url.startswith("socks4://")):
+                if SOCKS_AVAILABLE:
+                    connector = ProxyConnector.from_url(self._proxy_url)
+                    self._session = aiohttp.ClientSession(connector=connector, timeout=timeout)
+                    self._is_socks_proxy = True
+                else:
+                    logger.warning("SOCKS proxy requested but aiohttp-socks not installed")
+                    self._session = aiohttp.ClientSession(timeout=timeout)
+                    self._is_socks_proxy = False
+            else:
+                self._session = aiohttp.ClientSession(timeout=timeout)
+                self._is_socks_proxy = False
+
+            logger.info("HTTP session created", proxy=self._proxy_url[:30] + "..." if self._proxy_url else "none")
 
     async def disconnect(self) -> None:
         """Close all connections."""
@@ -262,11 +298,14 @@ class MarketConnector:
         logger.debug("API request", method=method, url=url)
 
         try:
+            # For SOCKS proxies, the connector handles the proxy - don't pass proxy param
+            proxy_param = None if getattr(self, '_is_socks_proxy', False) else self._proxy_url
             async with self._session.request(
                 method,
                 url,
                 json=data,
                 headers=headers,
+                proxy=proxy_param,
             ) as response:
                 response_text = await response.text()
 
@@ -486,11 +525,15 @@ class MarketConnector:
             await self.connect()
 
         try:
-            logger.info("Connecting to WebSocket", url=self.conn_config.ws_url)
+            logger.info("Connecting to WebSocket", url=self.conn_config.ws_url, proxy=self._proxy_url[:30] + "..." if self._proxy_url else "none")
+
+            # For SOCKS proxies, the connector handles the proxy - don't pass proxy param
+            proxy_param = None if getattr(self, '_is_socks_proxy', False) else self._proxy_url
 
             self._ws = await self._session.ws_connect(
                 self.conn_config.ws_url,
                 heartbeat=self.conn_config.ws_ping_interval_seconds,
+                proxy=proxy_param,
             )
             self._ws_connected = True
 
