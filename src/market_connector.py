@@ -601,7 +601,7 @@ class MarketConnector:
             # Create and sign the order
             signed_order = self._clob_client.create_order(order_args)
 
-            logger.info("Order signed, posting to CLOB...", order_id=signed_order.get("orderID", "unknown"))
+            logger.info("Order signed, posting to CLOB...")
 
             # Post the order
             response = self._clob_client.post_order(signed_order, order_type=ClobOrderType.GTC)
@@ -611,8 +611,9 @@ class MarketConnector:
                 response=response,
             )
 
-            # Parse response
-            order_id = response.get("orderID") or response.get("order_id") or f"clob_{int(time.time() * 1000)}"
+            # Parse response - response is a dict with orderID, success, etc.
+            order_id = str(response.get("orderID", "") or response.get("order_id", "") or f"clob_{int(time.time() * 1000)}")
+            success = response.get("success", False)
 
             order = Order(
                 id=order_id,
@@ -621,7 +622,7 @@ class MarketConnector:
                 side=side,
                 price=price,
                 size=size,
-                status=OrderStatus.LIVE if response.get("success") else OrderStatus.PENDING,
+                status=OrderStatus.LIVE if success else OrderStatus.PENDING,
             )
             self._open_orders[order.id] = order
 
