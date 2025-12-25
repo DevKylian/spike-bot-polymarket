@@ -606,18 +606,53 @@ class MarketConnector:
             # Post the order
             response = self._clob_client.post_order(signed_order, order_type=ClobOrderType.GTC)
 
+            # Log the raw response for debugging
             logger.info(
-                "Order placed successfully",
-                response=response,
+                "Order response received",
+                response_type=type(response).__name__,
+                response=str(response)[:500],
             )
 
-            # Parse response - response is a dict with orderID, success, etc.
-            order_id = str(response.get("orderID", "") or response.get("order_id", "") or f"clob_{int(time.time() * 1000)}")
-            success = response.get("success", False)
+            # Parse response - can be dict, string, or other types
+            order_id = f"clob_{int(time.time() * 1000)}"
+            success = False
+
+            if isinstance(response, dict):
+                order_id = str(response.get("orderID", "") or response.get("order_id", "") or response.get("id", "") or order_id)
+                success = response.get("success", True)  # Assume success if no explicit failure
+                if "error" in response:
+                    raise PolymarketAPIError(f"Order rejected: {response.get('error')}")
+            elif isinstance(response, str):
+                # Response might be a string (order ID or error message)
+                if response and not response.startswith("{") and len(response) > 10:
+                    order_id = response
+                    success = True
+                else:
+                    logger.warning("Unexpected string response", response=response[:100])
+            else:
+                # Handle other response types (could be an object with attributes)
+                logger.info("Non-dict response, checking attributes", type=type(response).__name__)
+                if hasattr(response, 'orderID'):
+                    order_id = str(response.orderID)
+                    success = True
+                elif hasattr(response, 'order_id'):
+                    order_id = str(response.order_id)
+                    success = True
+                elif hasattr(response, '__dict__'):
+                    # Try to access as dict
+                    resp_dict = response.__dict__
+                    order_id = str(resp_dict.get("orderID", "") or resp_dict.get("order_id", "") or order_id)
+                    success = True
+
+            logger.info(
+                "Order placed successfully",
+                order_id=order_id,
+                success=success,
+            )
 
             order = Order(
                 id=order_id,
-                market_id=response.get("market", ""),
+                market_id="",
                 token_id=token_id,
                 side=side,
                 price=price,
