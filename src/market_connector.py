@@ -603,8 +603,8 @@ class MarketConnector:
 
             logger.info("Order signed, posting to CLOB...")
 
-            # Post the order
-            response = self._clob_client.post_order(signed_order, order_type=ClobOrderType.GTC)
+            # Post the order (order_type is set in create_order, not post_order)
+            response = self._clob_client.post_order(signed_order)
 
             # Log the raw response for debugging
             logger.info(
