@@ -44,6 +44,14 @@ class TradingStartRequest(BaseModel):
     token_id: str
     market_info: dict | None = None
 
+
+class TestBetRequest(BaseModel):
+    """Request to place a test bet."""
+    token_id: str
+    side: str = "BUY"  # BUY or SELL
+    amount: float = 1.0  # Amount in USDC
+    price: float | None = None  # If None, uses current mid price
+
 # Path to templates and static files
 WEB_DIR = Path(__file__).parent
 TEMPLATES_DIR = WEB_DIR / "templates"
@@ -146,6 +154,7 @@ class WebDashboard:
         self._on_start_trading: Callable[[str, dict], Coroutine[Any, Any, bool]] | None = None
         self._on_stop_trading: Callable[[], Coroutine[Any, Any, bool]] | None = None
         self._on_config_change: Callable[[dict], Coroutine[Any, Any, None]] | None = None
+        self._on_test_bet: Callable[[str, str, float, float | None], Coroutine[Any, Any, dict]] | None = None
 
     def on_start_trading(self, callback: Callable[[str, dict], Coroutine[Any, Any, bool]]) -> None:
         """Register callback for when trading starts."""
@@ -158,6 +167,27 @@ class WebDashboard:
     def on_config_change(self, callback: Callable[[dict], Coroutine[Any, Any, None]]) -> None:
         """Register callback for configuration changes."""
         self._on_config_change = callback
+
+    def on_test_bet(self, callback: Callable[[str, str, float, float | None], Coroutine[Any, Any, dict]]) -> None:
+        """Register callback for test bet."""
+        self._on_test_bet = callback
+
+    async def place_test_bet(self, token_id: str, side: str, amount: float, price: float | None = None) -> dict:
+        """Place a test bet to verify trading is working."""
+        try:
+            if self._on_test_bet:
+                result = await self._on_test_bet(token_id, side, amount, price)
+                await self.manager.broadcast({
+                    "type": "test_bet_result",
+                    "data": result,
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                })
+                return result
+            else:
+                return {"error": "Test bet callback not registered"}
+        except Exception as e:
+            logger.error("Test bet failed", error=str(e))
+            return {"error": str(e)}
 
     async def analyze_market_url(self, url: str) -> dict:
         """Analyze a Polymarket URL and return market info with viability."""
@@ -403,6 +433,15 @@ class WebDashboard:
             "trade_history": self.trade_history[:20],
         }
 
+    def get_connection_status(self) -> dict:
+        """Get connection status - to be updated by main bot."""
+        return {
+            "dashboard_active": True,
+            "is_trading": self.is_trading,
+            "is_paper_trading": self.is_paper_trading,
+            "current_token": self.current_token_id,
+        }
+
 
 def create_app(dashboard: "WebDashboard | None" = None) -> FastAPI:
     """Create FastAPI application."""
@@ -521,6 +560,25 @@ def create_app(dashboard: "WebDashboard | None" = None) -> FastAPI:
         if dashboard:
             return await dashboard.stop_trading_on_token()
         return {"error": "Dashboard not initialized"}
+
+    @app.post("/api/trading/test-bet")
+    async def test_bet(request: TestBetRequest):
+        """Place a test bet to verify trading functionality."""
+        if dashboard:
+            return await dashboard.place_test_bet(
+                token_id=request.token_id,
+                side=request.side,
+                amount=request.amount,
+                price=request.price,
+            )
+        return {"error": "Dashboard not initialized"}
+
+    @app.get("/api/connection-status")
+    async def get_connection_status():
+        """Get current connection status for debugging."""
+        if dashboard and hasattr(dashboard, 'get_connection_status'):
+            return dashboard.get_connection_status()
+        return {"status": "unknown"}
 
     @app.post("/api/backtest")
     async def run_backtest(request: Request):

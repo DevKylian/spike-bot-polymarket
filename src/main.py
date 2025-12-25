@@ -184,6 +184,7 @@ class SpikeBot:
                 self.dashboard.on_start_trading(self._on_start_trading_from_dashboard)
                 self.dashboard.on_stop_trading(self._on_stop_trading_from_dashboard)
                 self.dashboard.on_config_change(self._on_config_change_from_dashboard)
+                self.dashboard.on_test_bet(self._on_test_bet_from_dashboard)
 
                 # Auto-set dashboard to trading mode with the first token
                 if target_markets:
@@ -417,6 +418,78 @@ class SpikeBot:
         # Update strategy engine if exists
         if self.strategy and hasattr(self.strategy, 'engine'):
             self.strategy.engine.config = self.config
+
+    async def _on_test_bet_from_dashboard(
+        self,
+        token_id: str,
+        side: str,
+        amount: float,
+        price: float | None = None
+    ) -> dict:
+        """Handle test bet request from dashboard."""
+        from .market_connector import OrderSide
+
+        structlog.get_logger().info(
+            "Test bet requested from dashboard",
+            token_id=token_id[:30] + "...",
+            side=side,
+            amount=amount,
+            price=price,
+            paper_trading=self.config.is_paper_trading,
+        )
+
+        try:
+            if not self.connector:
+                return {"success": False, "error": "Connector not initialized"}
+
+            # Get current price if not provided
+            if price is None:
+                orderbook = await self.connector.get_orderbook(token_id)
+                if orderbook.mid_price:
+                    price = orderbook.mid_price
+                else:
+                    return {"success": False, "error": "Could not get market price"}
+
+            # Calculate size based on amount and price
+            size = amount / price if price > 0 else 0
+
+            # Convert side string to enum
+            order_side = OrderSide.BUY if side.upper() == "BUY" else OrderSide.SELL
+
+            structlog.get_logger().info(
+                "Placing test order",
+                token_id=token_id[:30] + "...",
+                side=order_side.value,
+                price=price,
+                size=size,
+            )
+
+            # Place the order
+            order = await self.connector.place_order(
+                token_id=token_id,
+                side=order_side,
+                price=price,
+                size=size,
+            )
+
+            result = {
+                "success": True,
+                "order_id": order.id,
+                "side": order.side.value,
+                "price": order.price,
+                "size": order.size,
+                "status": order.status.value,
+                "paper_trading": self.config.is_paper_trading,
+            }
+
+            structlog.get_logger().info("Test bet result", result=result)
+            return result
+
+        except Exception as e:
+            structlog.get_logger().error("Test bet failed", error=str(e))
+            import traceback
+            traceback.print_exc()
+            return {"success": False, "error": str(e)}
 
     async def _run_web_server(self) -> None:
         """Run the web dashboard server."""

@@ -741,6 +741,12 @@
                     <button class="btn btn-success" id="start-btn" disabled>▶ Start</button>
                     <button class="btn btn-danger" id="stop-btn" disabled>⏹ Stop</button>
                 </div>
+                <div style="margin-top: 0.5rem;">
+                    <button class="btn btn-secondary btn-block" id="test-bet-btn" disabled>
+                        🧪 Test Bet ($1)
+                    </button>
+                </div>
+                <div id="test-bet-result" style="margin-top: 0.5rem; font-size: 0.75rem; display: none;"></div>
             </div>
 
             <!-- Quick Stats -->
@@ -1034,6 +1040,8 @@
             analyzeBtn: document.getElementById('analyze-btn'),
             startBtn: document.getElementById('start-btn'),
             stopBtn: document.getElementById('stop-btn'),
+            testBetBtn: document.getElementById('test-bet-btn'),
+            testBetResult: document.getElementById('test-bet-result'),
 
             // Config
             spikeThreshold: document.getElementById('spike-threshold'),
@@ -1536,7 +1544,69 @@
             element.classList.add('active');
             state.selectedTokenId = tokenId;
             elements.startBtn.disabled = !state.selectedTokenId || state.isTrading;
+            elements.testBetBtn.disabled = !state.selectedTokenId;
             addLog(`Selected token: ${tokenId.substring(0, 30)}...`, 'info');
+        }
+
+        async function placeTestBet() {
+            if (!state.selectedTokenId || state.selectedTokenId.length < 10) {
+                addLog('Please select a token first', 'warn');
+                return;
+            }
+
+            elements.testBetBtn.disabled = true;
+            elements.testBetBtn.textContent = '🧪 Placing...';
+            elements.testBetResult.style.display = 'none';
+            addLog('Placing test bet...', 'info');
+
+            try {
+                const response = await fetch('/api/trading/test-bet', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        token_id: state.selectedTokenId,
+                        side: 'BUY',
+                        amount: 1.0
+                    })
+                });
+
+                const data = await response.json();
+
+                elements.testBetResult.style.display = 'block';
+
+                if (data.success) {
+                    const modeText = data.paper_trading ? '[PAPER]' : '[LIVE]';
+                    elements.testBetResult.innerHTML = `
+                        <div style="color: var(--accent-green); padding: 0.5rem; background: var(--accent-green-dim); border-radius: 4px;">
+                            ✅ ${modeText} Order placed!<br>
+                            ID: ${data.order_id?.substring(0, 20)}...<br>
+                            Price: ${data.price?.toFixed(4)}<br>
+                            Size: ${data.size?.toFixed(4)}<br>
+                            Status: ${data.status}
+                        </div>
+                    `;
+                    addLog(`Test bet successful: ${data.order_id?.substring(0, 20)}...`, 'success');
+                } else {
+                    elements.testBetResult.innerHTML = `
+                        <div style="color: var(--accent-red); padding: 0.5rem; background: var(--accent-red-dim); border-radius: 4px;">
+                            ❌ Failed: ${data.error}
+                        </div>
+                    `;
+                    addLog(`Test bet failed: ${data.error}`, 'error');
+                }
+
+            } catch (error) {
+                elements.testBetResult.style.display = 'block';
+                elements.testBetResult.innerHTML = `
+                    <div style="color: var(--accent-red); padding: 0.5rem; background: var(--accent-red-dim); border-radius: 4px;">
+                        ❌ Error: ${error.message}
+                    </div>
+                `;
+                addLog(`Test bet error: ${error.message}`, 'error');
+            } finally {
+                elements.testBetBtn.disabled = !state.selectedTokenId;
+                elements.testBetBtn.textContent = '🧪 Test Bet ($1)';
+            }
         }
 
         async function applyConfig() {
@@ -1692,6 +1762,7 @@
         elements.applyConfig.addEventListener('click', applyConfig);
         elements.startBtn.addEventListener('click', startTrading);
         elements.stopBtn.addEventListener('click', stopTrading);
+        elements.testBetBtn.addEventListener('click', placeTestBet);
         elements.runBacktest.addEventListener('click', () => runBacktest(false));
         elements.runBacktestSim.addEventListener('click', () => runBacktest(true));
         document.getElementById('clear-logs').addEventListener('click', () => {
